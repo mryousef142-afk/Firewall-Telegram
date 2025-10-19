@@ -1,0 +1,20 @@
+﻿{
+  "messages": {
+    "welcome": "Hi there! Welcome to Firewall Bot!",
+    "managementPanel": "You can control your groups from here.",
+    "channel": "Channel introductions and features will be available soon from the owner panel.",
+    "commands": "The command list will be published here shortly.",
+    "info": "More information will appear once the management dashboard is ready.",
+    "inlinePanel": "The in-group panel route will be enabled soon.",
+    "managementQuestion": "How would you like to configure the bot?"
+  },
+  "buttons": {
+    "addToGroup": "Add to Group",
+    "managementPanel": "Management Panel",
+    "channel": "Channel",
+    "commands": "Commands",
+    "info": "About",
+    "miniApp": "Open Mini App",
+    "inlinePanel": "Inline Panel"
+  }
+}
