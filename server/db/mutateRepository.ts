@@ -284,39 +284,92 @@ export async function recordStarsPurchaseInDb(input: StarsTransactionCompletionI
 
 export type PromoSlideSnapshot = {
   id: string;
-  fileId: string;
-  link: string;
-  width: number;
-  height: number;
+  title?: string | null;
+  subtitle?: string | null;
+  description?: string | null;
+  imageUrl: string;
+  thumbnailUrl?: string | null;
+  thumbnailStorageKey?: string | null;
+  storageKey?: string | null;
+  originalFileId?: string | null;
+  contentType?: string | null;
+  fileSize?: number | null;
+  width?: number | null;
+  height?: number | null;
+  checksum?: string | null;
+  accentColor?: string | null;
+  linkUrl?: string | null;
+  ctaLabel?: string | null;
+  ctaLink?: string | null;
   position?: number;
+  startsAt?: Date | null;
+  endsAt?: Date | null;
+  active?: boolean;
+  abTestGroupId?: string | null;
+  variant?: string | null;
+  createdBy?: string | null;
+  metadata?: Record<string, unknown>;
 };
 
 export async function upsertPromoSlide(snapshot: PromoSlideSnapshot): Promise<void> {
-  logger.info("promo slide upsert", { id: snapshot.id });
+  logger.info("promo slide upsert", { id: snapshot.id, variant: snapshot.variant, active: snapshot.active });
   await prisma.promoSlide.upsert({
     where: {
       id: snapshot.id,
     },
     create: {
       id: snapshot.id,
-      imageUrl: snapshot.fileId,
-      linkUrl: snapshot.link,
+      title: snapshot.title,
+      subtitle: snapshot.subtitle,
+      description: snapshot.description,
+      imageUrl: snapshot.imageUrl,
+      thumbnailUrl: snapshot.thumbnailUrl,
+      thumbnailStorageKey: snapshot.thumbnailStorageKey ?? null,
+      storageKey: snapshot.storageKey,
+      originalFileId: snapshot.originalFileId,
+      contentType: snapshot.contentType,
+      fileSize: snapshot.fileSize ?? null,
+      width: snapshot.width ?? null,
+      height: snapshot.height ?? null,
+      checksum: snapshot.checksum,
+      accentColor: snapshot.accentColor ?? "#0f172a",
+      linkUrl: snapshot.linkUrl,
+      ctaLabel: snapshot.ctaLabel,
+      ctaLink: snapshot.ctaLink,
       position: snapshot.position ?? 0,
-      metadata: {
-        fileId: snapshot.fileId,
-        width: snapshot.width,
-        height: snapshot.height,
-      },
+      startsAt: snapshot.startsAt ?? null,
+      endsAt: snapshot.endsAt ?? null,
+      active: snapshot.active ?? true,
+      abTestGroupId: snapshot.abTestGroupId,
+      variant: snapshot.variant,
+      createdBy: snapshot.createdBy,
+      metadata: snapshot.metadata ?? {},
     },
     update: {
-      imageUrl: snapshot.fileId,
-      linkUrl: snapshot.link,
+      title: snapshot.title,
+      subtitle: snapshot.subtitle,
+      description: snapshot.description,
+      imageUrl: snapshot.imageUrl,
+      thumbnailUrl: snapshot.thumbnailUrl,
+      thumbnailStorageKey: snapshot.thumbnailStorageKey ?? null,
+      storageKey: snapshot.storageKey,
+      originalFileId: snapshot.originalFileId,
+      contentType: snapshot.contentType,
+      fileSize: snapshot.fileSize ?? null,
+      width: snapshot.width ?? null,
+      height: snapshot.height ?? null,
+      checksum: snapshot.checksum,
+      accentColor: snapshot.accentColor ?? "#0f172a",
+      linkUrl: snapshot.linkUrl,
+      ctaLabel: snapshot.ctaLabel,
+      ctaLink: snapshot.ctaLink,
       position: snapshot.position ?? 0,
-      metadata: {
-        fileId: snapshot.fileId,
-        width: snapshot.width,
-        height: snapshot.height,
-      },
+      startsAt: snapshot.startsAt ?? null,
+      endsAt: snapshot.endsAt ?? null,
+      active: snapshot.active ?? true,
+      abTestGroupId: snapshot.abTestGroupId,
+      variant: snapshot.variant,
+      metadata: snapshot.metadata ?? {},
     },
   });
 }

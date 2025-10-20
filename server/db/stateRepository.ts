@@ -1,5 +1,6 @@
 import { prisma } from "./client.js";
 import { logger } from "../utils/logger.js";
+import type { PromoSlideRecord } from "../../shared/promo.js";
 
 export async function fetchPanelSettingsFromDb() {
   const record = await prisma.botSetting.findUnique({
@@ -164,24 +165,92 @@ export async function fetchOwnerWalletDetails(ownerTelegramId: string, limit = 5
   };
 }
 
-export async function fetchPromoSlidesFromDb() {
+const SLIDE_ANALYTICS_LOOKBACK_DAYS = 30;
+
+export async function fetchPromoSlidesFromDb(): Promise<PromoSlideRecord[]> {
   logger.debug("loading promo slides from database");
+  const now = new Date();
+  const lookbackCutoff = new Date(now.getTime() - SLIDE_ANALYTICS_LOOKBACK_DAYS * 86_400_000);
+
   const slides = await prisma.promoSlide.findMany({
-    orderBy: {
-      position: "asc",
-      createdAt: "asc",
+    orderBy: [
+      { position: "asc" },
+      { createdAt: "asc" },
+    ],
+    include: {
+      analyticsBuckets: {
+        where: {
+          bucket: {
+            gte: lookbackCutoff,
+          },
+        },
+      },
     },
   });
 
   return slides.map((slide) => {
-    const metadata = (slide.metadata as Record<string, unknown>) ?? {};
+    const analyticsTotals = slide.analyticsBuckets.reduce(
+      (acc, bucket) => {
+        acc.impressions += bucket.impressions ?? 0;
+        acc.clicks += bucket.clicks ?? 0;
+        acc.totalViewDurationMs += Number(bucket.totalViewDurationMs ?? BigInt(0));
+        acc.bounces += bucket.bounces ?? 0;
+        return acc;
+      },
+      {
+        impressions: 0,
+        clicks: 0,
+        totalViewDurationMs: 0,
+        bounces: 0,
+      },
+    );
+
+    const ctr = analyticsTotals.impressions > 0 ? analyticsTotals.clicks / analyticsTotals.impressions : 0;
+    const avgTime =
+      analyticsTotals.impressions > 0 ? analyticsTotals.totalViewDurationMs / analyticsTotals.impressions : 0;
+    const bounceRate =
+      analyticsTotals.impressions > 0 ? analyticsTotals.bounces / analyticsTotals.impressions : 0;
+
     return {
       id: slide.id,
-      fileId: typeof metadata.fileId === "string" ? metadata.fileId : "",
-      link: slide.linkUrl ?? "",
-      width: typeof metadata.width === "number" ? metadata.width : 0,
-      height: typeof metadata.height === "number" ? metadata.height : 0,
+      title: slide.title,
+      subtitle: slide.subtitle,
+      description: slide.description,
+      imageUrl: slide.imageUrl,
+      thumbnailUrl: slide.thumbnailUrl,
+      thumbnailStorageKey: slide.thumbnailStorageKey ?? null,
+      storageKey: slide.storageKey,
+      originalFileId: slide.originalFileId,
+      contentType: slide.contentType,
+      fileSize: slide.fileSize,
+      width: slide.width,
+      height: slide.height,
+      checksum: slide.checksum,
+      linkUrl: slide.linkUrl,
+      position: slide.position,
+      accentColor: slide.accentColor,
+      ctaLabel: slide.ctaLabel,
+      ctaLink: slide.ctaLink,
+      active: slide.active,
+      startsAt: slide.startsAt ? slide.startsAt.toISOString() : null,
+      endsAt: slide.endsAt ? slide.endsAt.toISOString() : null,
+      abTestGroupId: slide.abTestGroupId,
+      variant: slide.variant,
+      views: slide.views,
+      clicks: slide.clicks,
+      totalViewDurationMs: Number(slide.totalViewDurationMs ?? BigInt(0)),
+      bounces: slide.bounces,
+      metadata: (slide.metadata as Record<string, unknown>) ?? {},
+      createdBy: slide.createdBy,
       createdAt: slide.createdAt.toISOString(),
+      updatedAt: slide.updatedAt.toISOString(),
+      analytics: {
+        impressions: analyticsTotals.impressions,
+        clicks: analyticsTotals.clicks,
+        ctr: Number(ctr.toFixed(4)),
+        avgTimeSpent: Number((avgTime / 1000).toFixed(2)),
+        bounceRate: Number(bounceRate.toFixed(4)),
+      },
     };
   });
 }

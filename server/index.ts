@@ -1,12 +1,13 @@
 import "dotenv/config";
 
 import { startBotPolling, startBotWebhookServer } from "../bot/index.js";
+import { logger } from "./utils/logger.js";
 
 async function main(): Promise<void> {
   const mode = (process.env.BOT_START_MODE ?? "webhook").toLowerCase();
 
   if (mode === "polling") {
-    console.log("[server] Starting bot in polling mode.");
+    logger.info("server starting bot in polling mode");
     await startBotPolling();
     return;
   }
@@ -21,7 +22,7 @@ async function main(): Promise<void> {
   const port = Number.isFinite(Number(process.env.PORT)) ? Number(process.env.PORT) : undefined;
   const host = process.env.HOST;
 
-  console.log("[server] Starting webhook server...");
+  logger.info("server starting webhook server");
   await startBotWebhookServer({
     domain,
     path: webhookPath,
@@ -32,6 +33,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error("[server] Failed to start bot server:", error);
+  logger.error("server failed to start bot server", { error });
   process.exitCode = 1;
 });

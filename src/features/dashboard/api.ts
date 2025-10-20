@@ -5,6 +5,7 @@ import type {
   DashboardSnapshot,
   DashboardInsights,
   DashboardPromotions,
+  DashboardPromoSlot,
   GroupBanSettings,
   GroupDetail,
   GroupGeneralSettings,
@@ -33,16 +34,20 @@ import type {
   GiveawayCreationResult,
   GiveawayDashboardData,
   GiveawayDetail,
-  GiveawayPlanOption,
-  GiveawayStatus,
-  GiveawaySummary,
-  GiveawayWinnerCode,
 } from "./types.ts";
 import { BAN_RULE_KEYS } from "./types.ts";
 import { dashboardConfig } from "@/config/dashboard.ts";
 import { getTelegramInitData } from "@/utils/telegram";
 
 const DAY_MS = 86_400_000;
+const PROMO_SLIDE_WIDTH = 960;
+const PROMO_SLIDE_HEIGHT = 360;
+const PROMO_ANALYTICS_LOOKBACK_DAYS = 30;
+const DEFAULT_PROMO_ROTATION_SECONDS = 6;
+type PromoSlidesResponse = {
+  slides: DashboardPromoSlot[];
+  total?: number;
+};
 
 const clampHour = (value: number) => ((value % 24) + 24) % 24;
 const formatHour = (hour: number) => `${clampHour(hour).toString().padStart(2, "0")}:00`;
@@ -52,12 +57,14 @@ const STARS_PLANS: StarsPlan[] = [
   { id: "stars-60", days: 60, price: 900 },
   { id: "stars-90", days: 90, price: 1300 },
 ];
-const GIVEAWAY_PRICE_MULTIPLIER = 1.2;
-const GIVEAWAY_DURATION_OPTIONS = [6, 12, 24];
 const DEFAULT_TIMEZONE = "UTC";
 
 
 function delay(ms: number): Promise<void> {
+  if (ms <= 0 || import.meta.env.PROD) {
+    return Promise.resolve();
+  }
+
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
@@ -282,42 +289,95 @@ function createMockSnapshot(): DashboardSnapshot {
   };
   const promoImage = new URL("../../assets/application.png", import.meta.url).href;
   const promotions: DashboardPromotions = {
-    rotationSeconds: 8,
+    rotationSeconds: DEFAULT_PROMO_ROTATION_SECONDS,
     metadata: {
-      maxSlots: 3,
-      recommendedWidth: 960,
-      recommendedHeight: 360,
+      maxSlots: 5,
+      recommendedWidth: PROMO_SLIDE_WIDTH,
+      recommendedHeight: PROMO_SLIDE_HEIGHT,
+      analyticsLookbackDays: PROMO_ANALYTICS_LOOKBACK_DAYS,
+      abTestingEnabled: true,
     },
+    canManage: true,
     slots: [
       {
         id: "promo-sponsor-upgrade",
         title: "Secure more groups with sponsor bundles",
         subtitle: "Activate the sponsor plan and gift seven days of protection to every new community.",
+        description: "Sponsor bundles unlock instant credits for your partner communities.",
         imageUrl: promoImage,
+        thumbnailUrl: promoImage,
         accentColor: "#1e293b",
+        linkUrl: "https://t.me/tgfirewallbot",
         ctaLabel: "Explore plans",
         ctaLink: "https://t.me/tgfirewallbot",
         active: true,
+        startsAt: null,
+        endsAt: null,
+        abTestGroupId: null,
+        variant: null,
+        position: 0,
+        analytics: {
+          impressions: 1240,
+          clicks: 210,
+          ctr: 0.169,
+          avgTimeSpent: 5.4,
+          bounceRate: 0.32,
+        },
+        createdAt: new Date(now.getTime() - 7 * DAY_MS).toISOString(),
         updatedAt: now.toISOString(),
       },
       {
         id: "promo-giveaway",
         title: "Join our exclusive giveaways",
         subtitle: "Win 500 Stars every week and scale your groups without limits.",
+        description: "Take part in automated giveaways to boost engagement and reward your members.",
+        imageUrl: promoImage,
+        thumbnailUrl: promoImage,
         accentColor: "#312e81",
+        linkUrl: "https://t.me/tgfirewallbot",
         ctaLabel: "Enter now",
         ctaLink: "https://t.me/tgfirewallbot",
         active: true,
+        startsAt: null,
+        endsAt: null,
+        abTestGroupId: "giveaway-promo",
+        variant: "A",
+        position: 1,
+        analytics: {
+          impressions: 980,
+          clicks: 188,
+          ctr: 0.1918,
+          avgTimeSpent: 6.1,
+          bounceRate: 0.28,
+        },
+        createdAt: new Date(now.getTime() - 5 * DAY_MS).toISOString(),
         updatedAt: now.toISOString(),
       },
       {
         id: "promo-support",
         title: "Connect with the security team",
         subtitle: "Request a free security audit for up to three featured groups each month.",
+        description: "Our analysts deliver actionable hardening plans tailored to your communities.",
+        imageUrl: promoImage,
+        thumbnailUrl: promoImage,
         accentColor: "#0f172a",
+        linkUrl: "https://t.me/tgfirewallbot",
         ctaLabel: "Request access",
         ctaLink: "https://t.me/tgfirewallbot",
         active: true,
+        startsAt: null,
+        endsAt: null,
+        abTestGroupId: "security-audit",
+        variant: "control",
+        position: 2,
+        analytics: {
+          impressions: 845,
+          clicks: 92,
+          ctr: 0.1089,
+          avgTimeSpent: 4.7,
+          bounceRate: 0.36,
+        },
+        createdAt: new Date(now.getTime() - 3 * DAY_MS).toISOString(),
         updatedAt: now.toISOString(),
       },
     ],
@@ -328,8 +388,47 @@ function createMockSnapshot(): DashboardSnapshot {
     generatedAt: now.toISOString(),
     groups: filtered,
     insights,
-    promotions,
+    promotions: { ...promotions, canManage: true },
   };
+}
+
+function computeDashboardInsightsFromGroups(groups: ManagedGroup[]): DashboardInsights {
+  const expiringSoon = groups.filter(
+    (group) => group.status.kind === "active" && group.status.daysLeft <= 5,
+  ).length;
+  return {
+    expiringSoon,
+    messagesToday: 0,
+    newMembersToday: 0,
+  };
+}
+
+function buildPromotionsFromResponse(response: PromoSlidesResponse | null | undefined): DashboardPromotions {
+  if (!response || !Array.isArray(response.slides)) {
+    const mock = createMockSnapshot().promotions;
+    return mock;
+  }
+  return {
+    slots: response.slides,
+    rotationSeconds: DEFAULT_PROMO_ROTATION_SECONDS,
+    metadata: {
+      maxSlots: 10,
+      recommendedWidth: PROMO_SLIDE_WIDTH,
+      recommendedHeight: PROMO_SLIDE_HEIGHT,
+      analyticsLookbackDays: PROMO_ANALYTICS_LOOKBACK_DAYS,
+      abTestingEnabled: true,
+    },
+    total: response.total,
+    canManage: response.canManage ?? false,
+  };
+}
+
+async function fetchActivePromotionsFromApi(): Promise<DashboardPromotions> {
+  if (!apiBaseUrl) {
+    return createMockSnapshot().promotions;
+  }
+  const response = await fetchActivePromoSlides();
+  return buildPromotionsFromResponse(response);
 }
 
 function createTimeRange(mode: TimeRangeMode, start = "00:00", end = "23:59"): TimeRangeSetting {
@@ -612,8 +711,157 @@ function createCustomTextSettings(id: string): CustomTextSettings {
 }
 
 export async function fetchDashboardSnapshot(): Promise<DashboardSnapshot> {
-  await delay(dashboardConfig.mockDelayMs);
-  return createMockSnapshot();
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    return createMockSnapshot();
+  }
+
+  try {
+    const [groupsResponse, promotions] = await Promise.all([
+      requestApi<{ groups: ManagedGroup[] }>("/groups", { method: "GET" }),
+      fetchActivePromotionsFromApi(),
+    ]);
+
+    const groups = Array.isArray(groupsResponse.groups) ? groupsResponse.groups : [];
+    return {
+      ownerId: 0,
+      generatedAt: new Date().toISOString(),
+      groups,
+      insights: computeDashboardInsightsFromGroups(groups),
+      promotions: { ...promotions, canManage: true },
+    };
+  } catch (error) {
+    console.warn("[dashboard] failed to fetch snapshot, falling back to mock data", error);
+    return createMockSnapshot();
+  }
+}
+
+export type CreatePromoSlidePayload = {
+  imageData: string;
+  fileName?: string;
+  linkUrl: string;
+  title?: string;
+  subtitle?: string;
+  description?: string;
+  accentColor?: string;
+  ctaLabel?: string;
+  ctaLink?: string;
+  abTestGroupId?: string;
+  variant?: string;
+  active?: boolean;
+  position?: number;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type UpdatePromoSlidePayload = Partial<{
+  title: string | null;
+  subtitle: string | null;
+  description: string | null;
+  accentColor: string | null;
+  ctaLabel: string | null;
+  ctaLink: string | null;
+  linkUrl: string | null;
+  active: boolean;
+  startsAt: string | null;
+  endsAt: string | null;
+  position: number;
+  abTestGroupId: string | null;
+  variant: string | null;
+  metadata: Record<string, unknown>;
+}>;
+
+export type PromoSlideEventType = "view" | "click";
+
+export type PromoSlideEventPayload = {
+  durationMs?: number;
+  bounced?: boolean;
+  variant?: string | null;
+};
+
+export async function fetchActivePromoSlides(): Promise<PromoSlidesResponse> {
+  if (!apiBaseUrl) {
+    const promotions = createMockSnapshot().promotions;
+    return {
+      slides: promotions.slots,
+      total: promotions.slots.length,
+    };
+  }
+  return requestApi<PromoSlidesResponse>("/promo-slides/active", { method: "GET" });
+}
+
+export async function fetchAllPromoSlides(): Promise<PromoSlidesResponse> {
+  if (!apiBaseUrl) {
+    const promotions = createMockSnapshot().promotions;
+    return {
+      slides: promotions.slots,
+      total: promotions.slots.length,
+    };
+  }
+  return requestApi<PromoSlidesResponse>("/promo-slides", { method: "GET" });
+}
+
+export async function createPromoSlideEntry(payload: CreatePromoSlidePayload): Promise<DashboardPromoSlot> {
+  if (!apiBaseUrl) {
+    throw new Error("Promo slide creation is only available with the production backend.");
+  }
+  return requestApi<DashboardPromoSlot>("/promo-slides", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePromoSlideEntry(
+  id: string,
+  payload: UpdatePromoSlidePayload,
+): Promise<DashboardPromoSlot> {
+  if (!apiBaseUrl) {
+    throw new Error("Promo slide updates are only available with the production backend.");
+  }
+  return requestApi<DashboardPromoSlot>(`/promo-slides/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deletePromoSlideEntry(id: string): Promise<void> {
+  if (!apiBaseUrl) {
+    throw new Error("Promo slide deletion is only available with the production backend.");
+  }
+  await requestApi<void>(`/promo-slides/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function reorderPromoSlideEntries(order: string[]): Promise<DashboardPromoSlot[]> {
+  if (!apiBaseUrl) {
+    throw new Error("Reordering promo slides requires the production backend.");
+  }
+  const response = await requestApi<PromoSlidesResponse>("/promo-slides/order", {
+    method: "PATCH",
+    body: JSON.stringify({ order }),
+  });
+  return response.slides;
+}
+
+export async function trackPromoSlideEvent(
+  id: string,
+  type: PromoSlideEventType,
+  payload: PromoSlideEventPayload = {},
+): Promise<void> {
+  if (!apiBaseUrl) {
+    return;
+  }
+  await requestApi(`/promo-slides/${encodeURIComponent(id)}/events`, {
+    method: "POST",
+    body: JSON.stringify({
+      type,
+      durationMs: payload.durationMs,
+      bounced: payload.bounced,
+      variant: payload.variant ?? null,
+    }),
+  });
 }
 
 export async function fetchGroupDetails(id: string): Promise<GroupDetail> {
@@ -1033,275 +1281,42 @@ function normalizeSearchIdentifier(value: string | null | undefined): string {
     .replace(/^@+/, "");
 }
 
-const giveawayPlans: GiveawayPlanOption[] = STARS_PLANS.map((plan) => ({
-  id: `giveaway-${plan.id}`,
-  starsPlanId: plan.id,
-  title: `${plan.days}-day access`,
-  days: plan.days,
-  basePrice: plan.price,
-  pricePerWinner: Math.round(plan.price * GIVEAWAY_PRICE_MULTIPLIER),
-}));
-
-let giveawayBalance = 1800;
-let giveawayRecords: GiveawaySummary[] | null = null;
-const giveawayJoins = new Set<string>();
-
-function computeGiveawayTotal(plan: GiveawayPlanOption, winners: number): number {
-  return plan.pricePerWinner * Math.max(1, winners);
-}
-
-function deriveGiveawayStatus(startsAt: string, endsAt: string): GiveawayStatus {
-  const now = Date.now();
-  const startMs = new Date(startsAt).getTime();
-  const endMs = new Date(endsAt).getTime();
-  if (endMs <= now) {
-    return "completed";
-  }
-  if (startMs > now) {
-    return "scheduled";
-  }
-  return "active";
-}
-
-function cloneGroup(group: ManagedGroup): ManagedGroup {
-  return JSON.parse(JSON.stringify(group)) as ManagedGroup;
-}
-
-function cloneGiveaway(summary: GiveawaySummary): GiveawaySummary {
-  return JSON.parse(JSON.stringify(summary)) as GiveawaySummary;
-}
-
-function generateWinnerCodes(summary: GiveawaySummary): GiveawayWinnerCode[] {
-  const sanitized = summary.targetGroup.title.replace(/[^A-Za-z0-9]/g, '').toUpperCase() || 'WINNER';
-  const prefix = sanitized.slice(0, 6) || 'WINNER';
-  return Array.from({ length: Math.max(1, summary.winnersCount) }).map((_, index) => {
-    const randomChunk = Math.random().toString(36).slice(2, 8).toUpperCase();
-    const code = `${prefix}-${String(index + 1).padStart(2, '0')}-${randomChunk}`;
-    const message = `You won the giveaway for ${summary.targetGroup.title}! Send the code ${code} alone in your group chat to apply the ${summary.prize.days}-day credit.`;
-    return { code, message };
-  });
-}
-
-function attachWinnerCodes(summary: GiveawaySummary): GiveawaySummary {
-  if (summary.winnerCodes && summary.winnerCodes.length > 0) {
-    return summary;
-  }
-  const winnerCodes = generateWinnerCodes(summary);
-  winnerCodes.forEach((entry, index) => {
-    console.info('[giveaway] winner_notified', {
-      giveawayId: summary.id,
-      position: index + 1,
-      code: entry.code,
-      message: entry.message,
-    });
-  });
-  return { ...summary, winnerCodes };
-}
-
-function ensureGiveawayRecords(): GiveawaySummary[] {
-  if (!giveawayRecords) {
-    giveawayRecords = createInitialGiveaways();
-  }
-  return giveawayRecords;
-}
-
-function createInitialGiveaways(): GiveawaySummary[] {
-  const snapshot = createMockSnapshot();
-  const baseGroups = snapshot.groups.filter((group) => group.status.kind !== "removed").slice(0, 3);
-  const now = Date.now();
-  return baseGroups.map((group, index) => {
-    const plan = giveawayPlans[index % giveawayPlans.length];
-    const winners = Math.max(1, 2 + index);
-    const startsAt = new Date(now - (index + 1) * 2 * 3_600_000).toISOString();
-    const endsAt = new Date(now + (index === 0 ? 6 : (index + 1) * 5) * 3_600_000).toISOString();
-    const status = deriveGiveawayStatus(startsAt, endsAt);
-    const participants = winners * (status === "completed" ? 10 : 6 + index * 2);
-    const summary: GiveawaySummary = {
-      id: `mock-giveaway-${group.id}`,
-      title: `Special giveaway for ${group.title}`,
-      status,
-      prize: {
-        planId: plan.id,
-        days: plan.days,
-        winners,
-        pricePerWinner: plan.pricePerWinner,
-        totalCost: computeGiveawayTotal(plan, winners),
-      },
-      participants,
-      winnersCount: winners,
-      startsAt,
-      endsAt,
-      targetGroup: cloneGroup(group),
-      requirements: {
-        premiumOnly: index % 2 === 0,
-        targetChannel: `@${group.id}`,
-        extraChannel: index % 3 === 0 ? '@tgfirewall' : null,
-      },
-      winnerCodes: [],
-    };
-
-    return summary.status === 'completed' ? attachWinnerCodes(summary) : summary;
-  });
-}
-
-function findGiveawayPlan(planId: string): GiveawayPlanOption {
-  const plan = giveawayPlans.find((item) => item.id === planId || item.starsPlanId === planId);
-  if (!plan) {
-    throw new Error("Giveaway plan not found");
-  }
-  return plan;
-}
-
-function findGroupById(groupId: string): ManagedGroup {
-  const snapshot = createMockSnapshot();
-  const group = snapshot.groups.find((item) => item.id === groupId);
-  if (!group) {
-    throw new Error("Group not found");
-  }
-  return cloneGroup(group);
-}
-
-function refreshGiveawayStatuses(): void {
-  const records = ensureGiveawayRecords();
-  giveawayRecords = records.map((item) => {
-    const status = deriveGiveawayStatus(item.startsAt, item.endsAt);
-    if (status === item.status) {
-      if (status === 'completed') {
-        return attachWinnerCodes(item);
-      }
-      return item;
-    }
-    let updated: GiveawaySummary = { ...item, status };
-    if (status === 'completed') {
-      updated = attachWinnerCodes(updated);
-    }
-    return updated;
-  });
-}
-
-function buildGiveawayDetail(summary: GiveawaySummary, joined: boolean): GiveawayDetail {
-  const remainingSeconds = Math.max(0, Math.round((new Date(summary.endsAt).getTime() - Date.now()) / 1000));
-  return {
-    ...cloneGiveaway(summary),
-    joined,
-    remainingSeconds,
-    totalCost: summary.prize.totalCost,
-    premiumOnly: summary.requirements.premiumOnly,
-  };
-}
-
 export async function fetchGiveawayConfig(): Promise<GiveawayConfig> {
-  await delay(dashboardConfig.mockDelayMs);
-  return {
-    plans: giveawayPlans.map((plan) => ({ ...plan })),
-    durationOptions: [...GIVEAWAY_DURATION_OPTIONS],
-    allowCustomDuration: true,
-  };
+  if (!apiBaseUrl) {
+    throw new Error("Giveaway API is not configured.");
+  }
+  return requestApi<GiveawayConfig>("/giveaways/config", { method: "GET" });
 }
 
 export async function fetchGiveawayDashboard(): Promise<GiveawayDashboardData> {
-  await delay(dashboardConfig.mockDelayMs);
-  refreshGiveawayStatuses();
-  const records = ensureGiveawayRecords();
-  const active = records.filter((item) => item.status !== "completed").map(cloneGiveaway);
-  const past = records.filter((item) => item.status === "completed").map(cloneGiveaway);
-  return {
-    balance: giveawayBalance,
-    active,
-    past,
-  };
+  if (!apiBaseUrl) {
+    throw new Error("Giveaway API is not configured.");
+  }
+  return requestApi<GiveawayDashboardData>("/giveaways/dashboard", { method: "GET" });
 }
 
 export async function createGiveaway(payload: GiveawayCreationPayload): Promise<GiveawayCreationResult> {
-  await delay(dashboardConfig.mockDelayMs);
-  const plan = findGiveawayPlan(payload.planId);
-  const group = findGroupById(payload.groupId);
-  const winners = Math.max(1, payload.winners);
-  const startsAt = new Date().toISOString();
-  const durationMs = Math.max(1, payload.durationHours) * 3_600_000;
-  const endsAt = new Date(Date.now() + durationMs).toISOString();
-  const totalCost = computeGiveawayTotal(plan, winners);
-  let summary: GiveawaySummary = {
-    id: `giveaway-${Date.now()}`,
-    title: payload.title ?? `${group.title} giveaway`,
-    status: deriveGiveawayStatus(startsAt, endsAt),
-    prize: {
-      planId: plan.id,
-      days: plan.days,
-      winners,
-      pricePerWinner: plan.pricePerWinner,
-      totalCost,
-    },
-    participants: 0,
-    winnersCount: winners,
-    startsAt,
-    endsAt,
-    targetGroup: cloneGroup(group),
-    requirements: {
-      premiumOnly: payload.premiumOnly,
-      targetChannel: `@${group.id}`,
-      extraChannel: payload.extraChannel ?? null,
-    },
-    winnerCodes: [],
-  };
-
-  if (summary.status === 'completed') {
-    summary = attachWinnerCodes(summary);
+  if (!apiBaseUrl) {
+    throw new Error("Giveaway API is not configured.");
   }
-
-  giveawayBalance = Math.max(0, giveawayBalance - totalCost);
-  giveawayRecords = [summary, ...ensureGiveawayRecords()];
-
-  console.info(`[giveaway] start notification: ${payload.notifyStart ? "enabled" : "disabled"}`);
-  console.info(`[giveaway] end notification: ${payload.notifyEnd ? "enabled" : "disabled"}`);
-
-  return {
-    id: summary.id,
-    totalCost,
-    status: summary.status,
-    createdAt: new Date().toISOString(),
-  };
+  return requestApi<GiveawayCreationResult>("/giveaways", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function fetchGiveawayDetail(id: string): Promise<GiveawayDetail> {
-  await delay(dashboardConfig.mockDelayMs);
-  refreshGiveawayStatuses();
-  const record = ensureGiveawayRecords().find((item) => item.id === id);
-  if (!record) {
-    throw new Error("Giveaway not found");
+  if (!apiBaseUrl) {
+    throw new Error("Giveaway API is not configured.");
   }
-  return buildGiveawayDetail(record, giveawayJoins.has(id));
+  return requestApi<GiveawayDetail>(`/giveaways/${encodeURIComponent(id)}`, { method: "GET" });
 }
 
 export async function joinGiveaway(id: string): Promise<GiveawayDetail> {
-  await delay(dashboardConfig.mockDelayMs);
-  refreshGiveawayStatuses();
-  const records = ensureGiveawayRecords();
-  const index = records.findIndex((item) => item.id === id);
-  if (index === -1) {
-    throw new Error("Giveaway not found");
+  if (!apiBaseUrl) {
+    throw new Error("Giveaway API is not configured.");
   }
-  const summary = records[index];
-  if (summary.status === "completed") {
-    throw new Error("This giveaway has already finished");
-  }
-  if (!giveawayJoins.has(id)) {
-    giveawayJoins.add(id);
-    const updated = { ...summary, participants: summary.participants + 1 };
-    records[index] = updated;
-  }
-  giveawayRecords = records;
-  return buildGiveawayDetail(records[index], true);
+  return requestApi<GiveawayDetail>(`/giveaways/${encodeURIComponent(id)}/join`, {
+    method: "POST",
+  });
 }
-
-
-
-
-
-
-
-
-
-
-
-

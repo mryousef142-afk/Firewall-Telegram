@@ -90,3 +90,50 @@ export async function refundStarsPayment(options: { userId: number; telegramPaym
   });
   return result;
 }
+
+type TelegramFileResponse = {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_path?: string;
+};
+
+export type TelegramFileInfo = {
+  fileId: string;
+  fileUniqueId: string;
+  filePath: string;
+  fileSize?: number;
+};
+
+export async function getTelegramFile(fileId: string): Promise<TelegramFileInfo> {
+  const result = await callTelegramApi<TelegramFileResponse>({
+    method: "getFile",
+    payload: {
+      file_id: fileId,
+    },
+  });
+  if (!result.file_path) {
+    throw new Error("Telegram did not return a file_path for the requested file");
+  }
+  return {
+    fileId: result.file_id,
+    fileUniqueId: result.file_unique_id,
+    filePath: result.file_path,
+    fileSize: result.file_size,
+  };
+}
+
+export function buildTelegramFileUrl(filePath: string): string {
+  const normalized = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+  return `${TELEGRAM_API_BASE}/file/bot${BOT_TOKEN}/${normalized}`;
+}
+
+export async function downloadTelegramFile(filePath: string): Promise<ArrayBuffer> {
+  const url = buildTelegramFileUrl(filePath);
+  const response = await fetch(url);
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to download Telegram file: ${response.status} ${message}`);
+  }
+  return response.arrayBuffer();
+}

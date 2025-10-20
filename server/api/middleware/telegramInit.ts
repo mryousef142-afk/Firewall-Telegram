@@ -16,6 +16,7 @@ type TelegramUserPayload = {
   last_name?: string;
   language_code?: string;
   is_premium?: boolean;
+  is_bot?: boolean;
 };
 
 type TelegramInitContext = {

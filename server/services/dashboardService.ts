@@ -1,6 +1,7 @@
 import type { StarsState, StarsPlanRecord, GroupRecord } from "../../bot/state.js";
 import { getStarsState, listGroups } from "../../bot/state.js";
 import { fetchGroupsFromDb, fetchOwnerWalletBalance } from "../db/stateRepository.js";
+import { logger } from "../utils/logger.js";
 
 const databaseAvailable = Boolean(process.env.DATABASE_URL);
 
@@ -59,7 +60,7 @@ export async function loadGroupsSnapshot(): Promise<GroupRecord[]> {
       return records;
     }
   } catch (error) {
-    console.warn("[db] Failed to load groups from database, falling back to file store:", error);
+    logger.warn("db failed to load groups from database, falling back to file store", { error });
   }
   return listGroups();
 }
@@ -75,7 +76,7 @@ export async function resolveStarsBalance(ownerTelegramId: string | null): Promi
       return balance;
     }
   } catch (error) {
-    console.warn("[db] Failed to load Stars balance from database, using fallback:", error);
+    logger.warn("db failed to load stars balance from database, using fallback", { error });
   }
   return fallback;
 }

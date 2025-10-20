@@ -315,6 +315,8 @@ export function DashboardPage() {
             slots={promotions.slots}
             rotationSeconds={promotions.rotationSeconds}
             metadata={promotions.metadata}
+            canManage={promotions.canManage ?? false}
+            onManageClick={() => navigate('/promo-slides/manage')}
           />
         </div>
       )}

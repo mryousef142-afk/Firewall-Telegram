@@ -13,6 +13,13 @@
   margin: 0 auto;
 }
 
+.toolbar {
+  align-self: stretch;
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
 .dot,
 .dotActive {
   width: 10px;
@@ -92,6 +99,13 @@
   font-size: 14px;
   color: rgba(245, 247, 255, 0.72);
   line-height: 1.4;
+}
+
+.slideDescription {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(245, 247, 255, 0.62);
+  line-height: 1.5;
 }
 
 .slideImage {

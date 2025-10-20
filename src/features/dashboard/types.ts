@@ -34,28 +34,50 @@ export interface DashboardInsights {
   newMembersToday: number;
 }
 
+export interface PromoSlideAnalytics {
+  impressions: number;
+  clicks: number;
+  ctr: number;
+  avgTimeSpent: number;
+  bounceRate: number;
+}
+
 export interface DashboardPromoSlot {
   id: string;
-  title: string;
-  subtitle?: string;
-  imageUrl?: string;
-  accentColor?: string;
-  ctaLabel?: string;
-  ctaLink?: string;
+  title: string | null;
+  subtitle?: string | null;
+  description?: string | null;
+  imageUrl: string;
+  thumbnailUrl?: string | null;
+  accentColor?: string | null;
+  linkUrl?: string | null;
+  ctaLabel?: string | null;
+  ctaLink?: string | null;
   active: boolean;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  abTestGroupId?: string | null;
+  variant?: string | null;
+  position: number;
+  analytics: PromoSlideAnalytics;
+  createdAt: string;
   updatedAt: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface DashboardPromoMetadata {
   maxSlots: number;
   recommendedWidth: number;
   recommendedHeight: number;
+  analyticsLookbackDays?: number;
+  abTestingEnabled?: boolean;
 }
 
 export interface DashboardPromotions {
   slots: DashboardPromoSlot[];
   rotationSeconds: number;
   metadata: DashboardPromoMetadata;
+  total?: number;
 }
 
 export interface DashboardSnapshot {
@@ -343,7 +365,26 @@ export interface StarsWalletSummary {
   transactions: StarsTransactionEntry[];
 }
 
-export type GiveawayStatus = "scheduled" | "active" | "completed";
+export type GiveawayStatus = "scheduled" | "active" | "completed" | "cancelled";
+
+export interface GiveawayParticipantValidation {
+  oneJoinPerUser: boolean;
+  minAccountAge: number;
+  blockBots: boolean;
+}
+
+export interface GiveawayRefundConditions {
+  minParticipants: number;
+  autoRefundIfLowTurnout: boolean;
+  cancelGracePeriod: number;
+}
+
+export interface GiveawayAnalytics {
+  participationRate: number;
+  conversionToMember: number;
+  engagementScore: number;
+  costPerAcquisition: number;
+}
 
 export interface GiveawayPlanOption {
   id: string;
@@ -386,11 +427,16 @@ export interface GiveawaySummary {
   targetGroup: ManagedGroup;
   requirements: GiveawayRequirement;
   winnerCodes?: GiveawayWinnerCode[];
+  validation: GiveawayParticipantValidation;
+  refundPolicy: GiveawayRefundConditions;
+  analytics: GiveawayAnalytics;
+  cancellationReason?: string | null;
 }
 
 
 export interface GiveawayDashboardData {
   balance: number;
+  currency: string;
   active: GiveawaySummary[];
   past: GiveawaySummary[];
 }
@@ -399,6 +445,8 @@ export interface GiveawayConfig {
   plans: GiveawayPlanOption[];
   durationOptions: number[];
   allowCustomDuration: boolean;
+  validation: GiveawayParticipantValidation;
+  refundPolicy: GiveawayRefundConditions;
 }
 
 export interface GiveawayCreationPayload {
@@ -422,6 +470,7 @@ export interface GiveawayCreationResult {
   totalCost: number;
   status: GiveawayStatus;
   createdAt: string;
+  balance: number;
 }
 
 export interface GiveawayDetail extends GiveawaySummary {
@@ -430,7 +479,5 @@ export interface GiveawayDetail extends GiveawaySummary {
   totalCost: number;
   premiumOnly: boolean;
 }
-
-
 
 

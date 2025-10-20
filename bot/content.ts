@@ -1,6 +1,8 @@
-﻿import { readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { logger } from "../server/utils/logger.js";
 
 export interface BotContent {
   buttons: {
@@ -62,7 +64,7 @@ export function loadBotContent(): BotContent {
       }
     };
   } catch (error) {
-    console.warn("[bot] Falling back to default content due to:", error);
+    logger.warn("bot falling back to default content", { error });
     return fallbackContent;
   }
 }

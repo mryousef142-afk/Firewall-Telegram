@@ -20,6 +20,7 @@ import { JoinGiveawayPage } from '@/pages/Giveaways/JoinGiveawayPage';
 import { GiveawayHistoryPage } from '@/pages/Giveaways/GiveawayHistoryPage';
 import { ProfilePage } from '@/pages/Profile/ProfilePage';
 import { MissionsPage } from '@/pages/Missions/MissionsPage';
+import { PromoSliderManagerPage } from '@/pages/PromoSlides/PromoSliderManagerPage';
 
 export function App() {
   const lp = useMemo(() => retrieveLaunchParams(), []);
@@ -49,6 +50,7 @@ export function App() {
             <Route path='giveaway/create' element={<CreateGiveawayPage/>}/>
             <Route path='giveaway/history' element={<GiveawayHistoryPage/>}/>
             <Route path='giveaway/join/:giveawayId' element={<JoinGiveawayPage/>}/>
+            <Route path='promo-slides/manage' element={<PromoSliderManagerPage/>}/>
             <Route path='profile' element={<ProfilePage/>}/>
           </Route>
           <Route path='*' element={<Navigate to='/groups' replace/>}/>

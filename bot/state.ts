@@ -3,6 +3,9 @@ import { open, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { logger } from "../server/utils/logger.js";
+import type { PromoSlideRecord } from "../shared/promo.js";
+
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const dataDir = resolve(moduleDir, "../data");
 const statePath = resolve(dataDir, "bot-state.json");
@@ -11,6 +14,94 @@ const databaseAvailable = Boolean(process.env.DATABASE_URL);
 const ownerTelegramId = process.env.BOT_OWNER_ID?.trim() ?? null;
 const LOCK_RETRY_DELAY_MS = 40;
 const LOCK_STALE_THRESHOLD_MS = 30_000;
+const EMPTY_PROMO_ANALYTICS = Object.freeze({
+  impressions: 0,
+  clicks: 0,
+  ctr: 0,
+  avgTimeSpent: 0,
+  bounceRate: 0,
+});
+
+function normalizePromoSlideEntry(raw: unknown, index: number): PromoSlideRecord | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const value = raw as Record<string, unknown>;
+  const id =
+    typeof value.id === "string" && value.id.trim().length > 0
+      ? value.id.trim()
+      : `promo-${String(index + 1).padStart(3, "0")}`;
+  const now = new Date().toISOString();
+  const imageUrl =
+    typeof value.imageUrl === "string" && value.imageUrl.trim().length > 0
+      ? value.imageUrl
+      : typeof value.fileId === "string"
+        ? value.fileId
+        : "";
+
+  const analytics =
+    value.analytics && typeof value.analytics === "object"
+      ? {
+          impressions: Number((value.analytics as Record<string, unknown>).impressions ?? 0),
+          clicks: Number((value.analytics as Record<string, unknown>).clicks ?? 0),
+          ctr: Number((value.analytics as Record<string, unknown>).ctr ?? 0),
+          avgTimeSpent: Number((value.analytics as Record<string, unknown>).avgTimeSpent ?? 0),
+          bounceRate: Number((value.analytics as Record<string, unknown>).bounceRate ?? 0),
+        }
+      : { ...EMPTY_PROMO_ANALYTICS };
+
+  return {
+    id,
+    title: typeof value.title === "string" ? value.title : null,
+    subtitle: typeof value.subtitle === "string" ? value.subtitle : null,
+    description: typeof value.description === "string" ? value.description : null,
+    imageUrl,
+    thumbnailUrl: typeof value.thumbnailUrl === "string" ? value.thumbnailUrl : null,
+    thumbnailStorageKey: typeof value.thumbnailStorageKey === "string" ? value.thumbnailStorageKey : null,
+    storageKey: typeof value.storageKey === "string" ? value.storageKey : null,
+    originalFileId: typeof value.originalFileId === "string" ? value.originalFileId : null,
+    contentType: typeof value.contentType === "string" ? value.contentType : null,
+    fileSize:
+      typeof value.fileSize === "number" && Number.isFinite(value.fileSize) ? Math.floor(value.fileSize) : null,
+    width: typeof value.width === "number" && Number.isFinite(value.width) ? Math.floor(value.width) : null,
+    height: typeof value.height === "number" && Number.isFinite(value.height) ? Math.floor(value.height) : null,
+    checksum: typeof value.checksum === "string" ? value.checksum : null,
+    accentColor: typeof value.accentColor === "string" ? value.accentColor : null,
+    linkUrl:
+      typeof value.linkUrl === "string"
+        ? value.linkUrl
+        : typeof value.link === "string"
+          ? value.link
+          : null,
+    ctaLabel: typeof value.ctaLabel === "string" ? value.ctaLabel : null,
+    ctaLink: typeof value.ctaLink === "string" ? value.ctaLink : null,
+    position:
+      typeof value.position === "number" && Number.isFinite(value.position) ? Math.floor(value.position) : index,
+    active: value.active !== false,
+    startsAt: typeof value.startsAt === "string" ? value.startsAt : null,
+    endsAt: typeof value.endsAt === "string" ? value.endsAt : null,
+    abTestGroupId: typeof value.abTestGroupId === "string" ? value.abTestGroupId : null,
+    variant: typeof value.variant === "string" ? value.variant : null,
+    analytics,
+    views:
+      typeof value.views === "number" && Number.isFinite(value.views) ? Math.floor(value.views) : undefined,
+    clicks:
+      typeof value.clicks === "number" && Number.isFinite(value.clicks) ? Math.floor(value.clicks) : undefined,
+    totalViewDurationMs:
+      typeof value.totalViewDurationMs === "number" && Number.isFinite(value.totalViewDurationMs)
+        ? Math.max(0, Math.floor(value.totalViewDurationMs))
+        : undefined,
+    bounces:
+      typeof value.bounces === "number" && Number.isFinite(value.bounces) ? Math.floor(value.bounces) : undefined,
+    createdBy: typeof value.createdBy === "string" ? value.createdBy : null,
+    createdAt:
+      typeof value.createdAt === "string" && value.createdAt.trim().length > 0 ? value.createdAt : now,
+    updatedAt:
+      typeof value.updatedAt === "string" && value.updatedAt.trim().length > 0 ? value.updatedAt : now,
+    metadata:
+      value.metadata && typeof value.metadata === "object" ? (value.metadata as Record<string, unknown>) : {},
+  };
+}
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -39,15 +130,6 @@ export type GroupRecord = {
   inviteLink: string | null;
   photoUrl: string | null;
   managed: boolean;
-};
-
-export type PromoSlideRecord = {
-  id: string;
-  fileId: string;
-  link: string;
-  width: number;
-  height: number;
-  createdAt: string;
 };
 
 export type BroadcastRecord = {
@@ -139,7 +221,7 @@ const defaultState: BotState = {
   promoSlides: [],
   broadcasts: [],
   stars: {
-    balance: 2400,
+    balance: 0,
     plans: [
       { id: "stars-30", days: 30, price: 500 },
       { id: "stars-60", days: 60, price: 900 },
@@ -353,7 +435,11 @@ function readStateFromDisk(): BotState {
               )
             : structuredClone(defaultState.settings.buttonLabels),
       },
-      promoSlides: Array.isArray(parsed.promoSlides) ? parsed.promoSlides : [],
+      promoSlides: Array.isArray(parsed.promoSlides)
+        ? parsed.promoSlides
+            .map((entry, index) => normalizePromoSlideEntry(entry, index))
+            .filter((entry): entry is PromoSlideRecord => entry !== null)
+        : [],
       broadcasts: Array.isArray(parsed.broadcasts) ? parsed.broadcasts : [],
       stars: {
         balance:
@@ -366,7 +452,7 @@ function readStateFromDisk(): BotState {
       ownerSession: normalizeOwnerSession(parsed.ownerSession),
     };
   } catch (error) {
-    console.error("[state] Failed to parse bot-state.json, falling back to defaults:", error);
+    logger.error("state failed to parse bot-state.json, falling back to defaults", { error });
     return structuredClone(defaultState);
   }
 }
@@ -417,7 +503,10 @@ function logDbWarning(context: string, error: unknown): void {
   if (!databaseAvailable) {
     return;
   }
-  console.warn(`[db] ${context}:`, error instanceof Error ? error.message : error);
+  logger.warn("database fallback", {
+    context,
+    error: error instanceof Error ? error.message : error,
+  });
 }
 
 async function syncGroupRecord(record: GroupRecord): Promise<void> {
@@ -498,12 +587,8 @@ async function hydratePromoSlidesFromDb(): Promise<void> {
     }
     withState((draft) => {
       draft.promoSlides = slides.map((slide) => ({
-        id: slide.id,
-        fileId: slide.fileId,
-        link: slide.link,
-        width: slide.width,
-        height: slide.height,
-        createdAt: slide.createdAt,
+        ...slide,
+        analytics: slide.analytics ?? { ...EMPTY_PROMO_ANALYTICS },
       }));
       return draft;
     });
@@ -594,7 +679,7 @@ function persistState(next: BotState): void {
       }),
     )
     .catch((error) => {
-      console.error("[state] failed to persist bot state:", error);
+      logger.error("state failed to persist bot state", { error });
     });
 }
 
@@ -850,23 +935,61 @@ export function resetOwnerSessionState(): OwnerSessionState {
   return writeOwnerSessionState({ state: "idle" });
 }
 
-export function addPromoSlide(entry: PromoSlideRecord): PromoSlideRecord[] {
+export function addPromoSlide(entry: PromoSlideRecord, options: { persist?: boolean } = {}): PromoSlideRecord[] {
+  const persist = options.persist ?? true;
+  let normalizedEntry: PromoSlideRecord | null = null;
   state = withState((draft) => {
-    draft.promoSlides = [...draft.promoSlides.filter((slide) => slide.id !== entry.id), entry].sort((a, b) =>
-      a.id.localeCompare(b.id)
-    );
+    const normalized: PromoSlideRecord = {
+      ...entry,
+      analytics: entry.analytics ?? { ...EMPTY_PROMO_ANALYTICS },
+      position:
+        typeof entry.position === "number" && Number.isFinite(entry.position)
+          ? entry.position
+          : draft.promoSlides.length,
+    };
+    normalizedEntry = normalized;
+    const filtered = draft.promoSlides.filter((slide) => slide.id !== normalized.id);
+    filtered.push(normalized);
+    filtered.sort((a, b) => {
+      if (a.position !== b.position) {
+        return a.position - b.position;
+      }
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+    draft.promoSlides = filtered;
     return draft;
   });
-  if (databaseAvailable) {
+  const snapshotSource = normalizedEntry ?? entry;
+  if (persist && databaseAvailable) {
     void (async () => {
       try {
         const { upsertPromoSlide } = await import("../server/db/mutateRepository.js");
         await upsertPromoSlide({
-          id: entry.id,
-          fileId: entry.fileId,
-          link: entry.link,
-          width: entry.width,
-          height: entry.height,
+          id: snapshotSource.id,
+          title: snapshotSource.title ?? null,
+          subtitle: snapshotSource.subtitle ?? null,
+          description: snapshotSource.description ?? null,
+          imageUrl: snapshotSource.imageUrl,
+          thumbnailUrl: snapshotSource.thumbnailUrl ?? null,
+          storageKey: snapshotSource.storageKey ?? null,
+          originalFileId: snapshotSource.originalFileId ?? null,
+          contentType: snapshotSource.contentType ?? null,
+          fileSize: snapshotSource.fileSize ?? null,
+          width: snapshotSource.width ?? null,
+          height: snapshotSource.height ?? null,
+          checksum: snapshotSource.checksum ?? null,
+          accentColor: snapshotSource.accentColor ?? undefined,
+          linkUrl: snapshotSource.linkUrl ?? null,
+          ctaLabel: snapshotSource.ctaLabel ?? null,
+          ctaLink: snapshotSource.ctaLink ?? null,
+          position: snapshotSource.position,
+          startsAt: snapshotSource.startsAt ? new Date(snapshotSource.startsAt) : null,
+          endsAt: snapshotSource.endsAt ? new Date(snapshotSource.endsAt) : null,
+          active: snapshotSource.active,
+          abTestGroupId: snapshotSource.abTestGroupId ?? null,
+          variant: snapshotSource.variant ?? null,
+          createdBy: snapshotSource.createdBy ?? null,
+          metadata: snapshotSource.metadata ?? {},
         });
       } catch (error) {
         logDbWarning("promo slide upsert failed", error);
@@ -876,12 +999,13 @@ export function addPromoSlide(entry: PromoSlideRecord): PromoSlideRecord[] {
   return state.promoSlides;
 }
 
-export function removePromoSlide(id: string): PromoSlideRecord[] {
+export function removePromoSlide(id: string, options: { persist?: boolean } = {}): PromoSlideRecord[] {
+  const persist = options.persist ?? true;
   state = withState((draft) => {
     draft.promoSlides = draft.promoSlides.filter((slide) => slide.id !== id);
     return draft;
   });
-  if (databaseAvailable) {
+  if (persist && databaseAvailable) {
     void (async () => {
       try {
         const { deletePromoSlide } = await import("../server/db/mutateRepository.js");
@@ -891,6 +1015,67 @@ export function removePromoSlide(id: string): PromoSlideRecord[] {
       }
     })();
   }
+  return state.promoSlides;
+}
+
+export function setPromoSlides(entries: PromoSlideRecord[], options: { persist?: boolean } = {}): PromoSlideRecord[] {
+  state = withState((draft) => {
+    const sorted = [...entries].map((entry, index) => ({
+      ...entry,
+      analytics: entry.analytics ?? { ...EMPTY_PROMO_ANALYTICS },
+      position:
+        typeof entry.position === "number" && Number.isFinite(entry.position) ? entry.position : index,
+    }));
+    sorted.sort((a, b) => {
+      if (a.position !== b.position) {
+        return a.position - b.position;
+      }
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+    draft.promoSlides = sorted;
+    return draft;
+  });
+
+  if (options.persist && databaseAvailable) {
+    void (async () => {
+      try {
+        const { upsertPromoSlide } = await import("../server/db/mutateRepository.js");
+        for (const entry of entries) {
+          await upsertPromoSlide({
+            id: entry.id,
+            title: entry.title ?? null,
+            subtitle: entry.subtitle ?? null,
+            description: entry.description ?? null,
+            imageUrl: entry.imageUrl,
+            thumbnailUrl: entry.thumbnailUrl ?? null,
+            thumbnailStorageKey: entry.thumbnailStorageKey ?? null,
+            storageKey: entry.storageKey ?? null,
+            originalFileId: entry.originalFileId ?? null,
+            contentType: entry.contentType ?? null,
+            fileSize: entry.fileSize ?? null,
+            width: entry.width ?? null,
+            height: entry.height ?? null,
+            checksum: entry.checksum ?? null,
+            accentColor: entry.accentColor ?? undefined,
+            linkUrl: entry.linkUrl ?? null,
+            ctaLabel: entry.ctaLabel ?? null,
+            ctaLink: entry.ctaLink ?? null,
+            position: entry.position,
+            startsAt: entry.startsAt ? new Date(entry.startsAt) : null,
+            endsAt: entry.endsAt ? new Date(entry.endsAt) : null,
+            active: entry.active,
+            abTestGroupId: entry.abTestGroupId ?? null,
+            variant: entry.variant ?? null,
+            createdBy: entry.createdBy ?? null,
+            metadata: entry.metadata ?? {},
+          });
+        }
+      } catch (error) {
+        logDbWarning("promo slide bulk persist failed", error);
+      }
+    })();
+  }
+
   return state.promoSlides;
 }
 

@@ -13,6 +13,7 @@ import { installProcessingPipeline } from "./processing/index.js";
 import { fetchGroupsFromDb, fetchOwnerWalletBalance } from "../server/db/stateRepository.js";
 import { checkDatabaseHealth } from "../server/utils/health.js";
 import { createApiRouter } from "../server/api/router.js";
+import { logger } from "../server/utils/logger.js";
 import {
   appendStarsTransactionMetadata,
   extractTransactionIdFromPayload,
@@ -22,6 +23,7 @@ import {
   purchaseStars,
   refundStarsTransaction,
 } from "../server/services/starsService.js";
+import { createPromoSlide } from "../server/services/promoSlideService.js";
 import {
   buildGroupStarsStatus,
   buildStarsOverview,
@@ -61,6 +63,7 @@ import {
   type OwnerSessionState,
   upsertGroup
 } from "./state.js";
+import { registerPromoStaticRoutes } from "../server/services/promoMediaStorage.js";
 import type { FirewallRuleConfig, RuleAction, RuleCondition, RuleEscalation } from "../shared/firewall.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -429,14 +432,15 @@ const ownerMessages = {
     "Channel Announcement Text\nSend the announcement template that should appear when the channel button is used.",
   settingsInfoCommands:
     "Info and Commands Text\nShare the combined Info and Commands message that should be shown to users.",
-  sliderIntro: `Promo Slider Control\nManage the slides displayed in the dashboard carousel.\nRequired image size: ${REQUIRED_SLIDE_WIDTH}x${REQUIRED_SLIDE_HEIGHT}px.`,
+  sliderIntro: `Promo Slider Control\nManage the slides displayed in the dashboard carousel.\nRecommended image size: ${REQUIRED_SLIDE_WIDTH}x${REQUIRED_SLIDE_HEIGHT}px.`,
   sliderViewEmpty: "No promo slides have been configured yet.\nUse \"Add Slide\" to upload the first banner.",
   sliderViewHeader: "Current Promo Slides:",
-  sliderAddPromptPhoto: `Send a photo that exactly matches ${REQUIRED_SLIDE_WIDTH}x${REQUIRED_SLIDE_HEIGHT}px to create a new slide.`,
-  sliderAwaitLink: "Great! Now send the HTTP or HTTPS link that should open when users tap the slide.",
+  sliderAddPromptPhoto: `Send a high-quality photo (recommended ${REQUIRED_SLIDE_WIDTH}x${REQUIRED_SLIDE_HEIGHT}px). The bot will crop and compress it automatically.`,
+  sliderAwaitLink: "Great! Now send the HTTPS link that should open when users tap the slide.",
   sliderDimensionsMismatch:
-    `The image must be exactly ${REQUIRED_SLIDE_WIDTH}x${REQUIRED_SLIDE_HEIGHT}px. Please resize it and try again.`,
-  sliderLinkInvalid: "Please send a valid HTTP or HTTPS link.",
+    `For best results, upload at least ${REQUIRED_SLIDE_WIDTH}x${REQUIRED_SLIDE_HEIGHT}px. Smaller images will be upscaled automatically.`,
+  sliderLinkInvalid: "Please send a valid HTTPS link pointing to an approved domain.",
+  sliderMissingPhoto: "No image is pending. Please start again by sending the promo photo first.",
   sliderRemovePrompt: "Send the slide id you want to remove (for example: promo-001).",
   sliderRemoveMissing: "No slide matches that id. Check the list and try again.",
   dailyTaskIntro:
@@ -573,11 +577,28 @@ function formatSliderSummary(): string {
 
   const details = slides
     .map((slide, index) => {
-      return `${index + 1}. ${slide.id}
-   Link: ${slide.link}
-   Image file_id: ${slide.fileId}
-   Size: ${slide.width}x${slide.height}px
-   Created: ${slide.createdAt}`;
+      const status = slide.active ? "active" : "inactive";
+      const scheduleParts: string[] = [];
+      if (slide.startsAt) {
+        scheduleParts.push(`from ${new Date(slide.startsAt).toLocaleString()}`);
+      }
+      if (slide.endsAt) {
+        scheduleParts.push(`until ${new Date(slide.endsAt).toLocaleString()}`);
+      }
+      const scheduleLabel = scheduleParts.length > 0 ? scheduleParts.join(" ") : "no schedule";
+      const analytics = slide.analytics ?? EMPTY_PROMO_ANALYTICS;
+      const ctrPercent = (analytics.ctr * 100).toFixed(2);
+      const variantLabel = slide.abTestGroupId
+        ? `${slide.variant ?? "—"} (group ${slide.abTestGroupId})`
+        : slide.variant ?? "—";
+
+      return `${index + 1}. ${slide.id} • ${status}
+ Link: ${slide.linkUrl ?? "—"}
+ CTA: ${slide.ctaLabel ?? "—"} → ${slide.ctaLink ?? "—"}
+ Variant: ${variantLabel}
+ Schedule: ${scheduleLabel}
+ Image: ${slide.imageUrl}
+ Analytics: impressions ${analytics.impressions} | clicks ${analytics.clicks} | ctr ${ctrPercent}%`;
     })
     .join("\n\n");
 
@@ -1033,7 +1054,7 @@ function asyncHandler(handler: (req: Request, res: Response) => Promise<void>) {
       const safeMessage = status >= 500 ? "Internal server error" : message;
       if (status >= 500) {
         const reqWithId = req as RequestWithId;
-        console.error("[api] Handler error:", { requestId: reqWithId.id, error });
+        logger.error("[api] Handler error", { requestId: reqWithId.id, error });
       }
       res.status(status).json({ error: safeMessage });
     });
@@ -1242,7 +1263,7 @@ async function respondWithOwnerView(ctx: Context, text: string, keyboard: Inline
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes("message is not modified")) {
-        console.warn("[bot] Falling back to a new message in the owner panel flow:", message);
+        logger.warn("bot falling back to a new message in the owner panel flow", { message });
       }
     }
   }
@@ -1771,7 +1792,7 @@ bot.on("pre_checkout_query", async (ctx) => {
     try {
       await ctx.answerPreCheckoutQuery(false, "Unknown transaction reference.");
     } catch (error) {
-      console.error("[bot] Failed to reject pre-checkout query:", error);
+      logger.error("bot failed to reject pre-checkout query", { error });
     }
     return;
   }
@@ -1783,13 +1804,13 @@ bot.on("pre_checkout_query", async (ctx) => {
       payerUsername: query.from.username ?? null,
     });
   } catch (error) {
-    console.warn("[bot] Failed to append pre-checkout metadata:", error);
+    logger.warn("bot failed to append pre-checkout metadata", { error });
   }
 
   try {
     await ctx.answerPreCheckoutQuery(true);
   } catch (error) {
-    console.error("[bot] Failed to acknowledge pre-checkout query:", error);
+    logger.error("bot failed to acknowledge pre-checkout query", { error });
   }
 });
 
@@ -1809,7 +1830,7 @@ bot.on("successful_payment", async (ctx) => {
       providerPaymentChargeId: payment.provider_payment_charge_id ?? null,
     });
   } catch (error) {
-    console.warn("[bot] Failed to attach payment metadata to transaction:", error);
+    logger.warn("bot failed to attach payment metadata to transaction", { error });
   }
 
   try {
@@ -1820,7 +1841,7 @@ bot.on("successful_payment", async (ctx) => {
     const days = result.daysAdded > 0 ? `${result.daysAdded} day${result.daysAdded === 1 ? "" : "s"}` : "subscription";
     await ctx.reply(`✅ Stars payment confirmed!\n${days} added to ${target}. Refresh the mini app to view the update.`);
   } catch (error) {
-    console.error("[bot] Failed to finalize Stars transaction:", error);
+    logger.error("bot failed to finalize Stars transaction", { error });
     await ctx.reply("We received your payment but could not finalize the subscription automatically. Please reach out to support.");
   }
 });
@@ -1841,7 +1862,7 @@ bot.on("message", async (ctx, next) => {
           telegramRefundChargeId: refunded.telegram_payment_charge_id ?? null,
         });
       } catch (error) {
-        console.warn("[bot] Failed to attach refund metadata:", error);
+        logger.warn("bot failed to attach refund metadata", { error });
       }
     }
     await ctx.reply("💸 Your Stars payment has been refunded. The balance should refresh shortly.");
@@ -1872,9 +1893,11 @@ bot.on("photo", async (ctx) => {
   }
 
   const bestMatch = photos[photos.length - 1];
-  if (bestMatch.width !== REQUIRED_SLIDE_WIDTH || bestMatch.height !== REQUIRED_SLIDE_HEIGHT) {
-    await ctx.reply(ownerMessages.sliderDimensionsMismatch, buildSliderNavigationKeyboard());
-    return;
+  if (bestMatch.width < REQUIRED_SLIDE_WIDTH || bestMatch.height < REQUIRED_SLIDE_HEIGHT) {
+    await ctx.reply(
+      `Image will be resized to ${REQUIRED_SLIDE_WIDTH}×${REQUIRED_SLIDE_HEIGHT}. Using a larger photo can improve quality.`,
+      buildSliderNavigationKeyboard(),
+    );
   }
 
   setOwnerSession({
@@ -2209,28 +2232,36 @@ ${summary}`, buildOwnerNavigationKeyboard());
       return;
     }
     case "awaitingSliderLink": {
-      if (!isValidHttpUrl(text)) {
-        await ctx.reply(ownerMessages.sliderLinkInvalid, buildSliderNavigationKeyboard());
+      const pending = ownerSession.pending;
+      if (!pending || typeof pending.fileId !== "string") {
+        await ctx.reply(ownerMessages.sliderMissingPhoto, buildSliderNavigationKeyboard());
+        resetOwnerSession();
         return;
       }
 
-      const pending = ownerSession.pending;
-      const newSlide: PromoSlideRecord = {
-        id: nextPromoSlideId(),
-        fileId: pending.fileId,
-        link: text,
-        width: pending.width,
-        height: pending.height,
-        createdAt: new Date().toISOString()
-      };
-
-      addPromoSlide(newSlide);
+      try {
+        const record = await createPromoSlide({
+          id: nextPromoSlideId(),
+          fileId: pending.fileId,
+          linkUrl: text,
+          createdBy: ownerUserId ?? ctx.from?.id?.toString() ?? null,
+          metadata: {
+            source: "bot-owner-flow",
+          },
+        });
+        addPromoSlide(record, { persist: false });
+        resetOwnerSession();
+        await ctx.reply(
+          `Promo slide ${record.id} saved.
+Link: ${record.linkUrl ?? "—"}
+Image: ${record.imageUrl}`,
+          buildOwnerSliderKeyboard(),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to save promo slide";
+        await ctx.reply(`Unable to store promo slide: ${message}`, buildSliderNavigationKeyboard());
+      }
       resetOwnerSession();
-
-      await ctx.reply(
-        `Promo slide ${newSlide.id} saved.\nLink: ${newSlide.link}\nImage file_id: ${newSlide.fileId}`,
-        buildOwnerSliderKeyboard()
-      );
       return;
     }
     case "awaitingSliderRemoval": {
@@ -2290,7 +2321,7 @@ ${summary}`, buildOwnerNavigationKeyboard());
 });
 
 bot.catch((error) => {
-  console.error("[bot] Unexpected error:", error);
+  logger.error("bot unexpected error", { error });
 });
 
 function ensureLeadingSlash(path: string): string {
@@ -2305,11 +2336,11 @@ export async function startBotPolling(): Promise<void> {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
   } catch (error) {
-    console.warn("[bot] Failed to delete webhook before polling start:", error);
+    logger.warn("bot failed to delete webhook before polling start", { error });
   }
 
   await bot.launch();
-  console.log("[bot] Polling mode ready.");
+  logger.info("bot polling mode ready");
 
   process.once("SIGINT", () => {
     void bot.stop("SIGINT");
@@ -2340,6 +2371,7 @@ export async function startBotWebhookServer(options: WebhookOptions): Promise<We
   }
 
   const app = express();
+  await registerPromoStaticRoutes(app);
   app.set("trust proxy", true);
   app.use((req, res, next) => {
     const reqWithId = req as RequestWithId;
@@ -2386,13 +2418,15 @@ export async function startBotWebhookServer(options: WebhookOptions): Promise<We
   const webhookUrl = `${trimmedDomain}${webhookPath}`;
 
   await bot.telegram.setWebhook(webhookUrl, options.secretToken ? { secret_token: options.secretToken } : undefined);
-  console.log("[bot] Webhook registered:", webhookUrl);
+  logger.info("bot webhook registered", { webhookUrl });
 
   const port = options.port ?? Number(process.env.PORT ?? 3000);
   const host = options.host ?? "0.0.0.0";
 
   const server = app.listen(port, host, () => {
-    console.log(`[bot] Webhook server listening on http://${host === "0.0.0.0" ? "localhost" : host}:${port}`);
+    logger.info("bot webhook server listening", {
+      url: `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`,
+    });
   });
 
   process.once("SIGINT", () => {
