@@ -4,10 +4,8 @@ import { Avatar, Button, Input, Placeholder, Snackbar, Text } from '@telegram-ap
 
 import {
   fetchStarsOverview,
-  fetchStarsWalletSummary,
   giftStarsToGroup,
   purchaseStarsForGroup,
-  refundStarsTransaction,
   searchGroupsForStars,
 } from '@/features/dashboard/api.ts';
 import type {
@@ -15,8 +13,6 @@ import type {
   ManagedGroup,
   StarsPlan,
   StarsOverview,
-  StarsWalletSummary,
-  StarsTransactionEntry,
   StarsPurchaseResult,
 } from '@/features/dashboard/types.ts';
 import { formatNumber } from '@/utils/format.ts';
@@ -64,16 +60,6 @@ const TEXT = {
     expiring: 'Expiring soon',
     expired: 'Expired',
   },
-  wallet: {
-    title: 'Wallet & Activity',
-    balance: 'Available Stars',
-    spent: 'Stars spent',
-    refunded: 'Stars refunded',
-    pending: 'Pending payments',
-    empty: 'No payments recorded yet.',
-    refundAction: 'Refund',
-    refunding: 'Refunding...',
-  },
   invoice: {
     prompt: 'Complete the payment in Telegram to finish checkout.',
     opening: 'Opening invoice in Telegram...',
@@ -86,27 +72,10 @@ const TEXT = {
     success: (target: string) => `Refund processed for ${target}.`,
     error: 'Unable to refund this transaction. Please try again.',
   },
-  transactionStatus: {
-    completed: 'Completed',
-    pending: 'Pending',
-    refunded: 'Refunded',
-  },
-  transactionGift: 'Gift',
-  transactionManaged: 'Managed',
-  transactionUnknownGroup: 'Unknown group',
-  invoiceExternalNotice: 'The invoice was opened outside Telegram. Return here after paying.',
 };
 
 function planLabel(plan: StarsPlan): string {
   return `${plan.days} days - ${formatNumber(plan.price)} Stars`;
-}
-
-function formatDateTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
 function findPlan(plans: StarsPlan[], planId: string | null): StarsPlan | null {
@@ -133,10 +102,7 @@ export function StarsPage() {
   const [searchResults, setSearchResults] = useState<ManagedGroup[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
-  const [refundProcessing, setRefundProcessing] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState<string | null>(null);
-
-  const [wallet, setWallet] = useState<StarsWalletSummary | null>(null);
 
   const loadData = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -144,9 +110,8 @@ export function StarsPage() {
         setLoading(true);
       }
       try {
-        const [overviewData, walletData] = await Promise.all([fetchStarsOverview(), fetchStarsWalletSummary()]);
+        const overviewData = await fetchStarsOverview();
         setOverview(overviewData);
-        setWallet(walletData);
         if (overviewData.groups.length > 0) {
           setSelectedManagedId((prev) => prev ?? overviewData.groups[0].group.id);
         }
@@ -222,27 +187,6 @@ export function StarsPage() {
       setSnackbar(TEXT.refund.success(targetLabel));
     },
     [loadData, setSnackbar],
-  );
-
-  const handleRefundTransaction = useCallback(
-    async (transaction: StarsTransactionEntry) => {
-      setRefundProcessing(transaction.id);
-      try {
-        const result = await refundStarsTransaction(transaction.id);
-        await processStarsResult(result, {
-          targetId: transaction.groupId,
-          targetTitle: transaction.groupTitle ?? TEXT.transactionUnknownGroup,
-          gifted: transaction.gifted,
-          planDays: transaction.planDays ?? 0,
-        });
-      } catch (err) {
-        console.error('[stars] refund failed', err);
-        setSnackbar(TEXT.refund.error);
-      } finally {
-        setRefundProcessing(null);
-      }
-    },
-    [processStarsResult, setSnackbar],
   );
 
   useEffect(() => {
@@ -486,88 +430,6 @@ export function StarsPage() {
           </div>
         )}
       </section>
-
-      <section className={styles.section}>
-        <Text weight='2' className={styles.stepTitle}>{TEXT.wallet.title}</Text>
-        {wallet ? (
-          <>
-            <div className={styles.walletStats}>
-              <div className={styles.walletStat}>
-                <span className={styles.walletStatLabel}>{TEXT.wallet.balance}</span>
-                <span className={styles.walletStatValue}>
-                  {formatNumber(wallet.balance)} {wallet.currency.toUpperCase()}
-                </span>
-              </div>
-              <div className={styles.walletStat}>
-                <span className={styles.walletStatLabel}>{TEXT.wallet.spent}</span>
-                <span className={styles.walletStatValue}>
-                  {formatNumber(Math.abs(wallet.totalSpent))} {wallet.currency.toUpperCase()}
-                </span>
-              </div>
-              <div className={styles.walletStat}>
-                <span className={styles.walletStatLabel}>{TEXT.wallet.refunded}</span>
-                <span className={styles.walletStatValue}>
-                  {formatNumber(Math.abs(wallet.totalRefunded))} {wallet.currency.toUpperCase()}
-                </span>
-              </div>
-              <div className={styles.walletStat}>
-                <span className={styles.walletStatLabel}>{TEXT.wallet.pending}</span>
-                <span className={styles.walletStatValue}>{wallet.pendingCount}</span>
-              </div>
-            </div>
-            <div className={styles.transactionsList}>
-              {wallet.transactions.length === 0 ? (
-                <div className={styles.transactionsEmpty}>{TEXT.wallet.empty}</div>
-              ) : (
-                wallet.transactions.map((transaction) => {
-                  const amount = transaction.amount;
-                  const amountDisplay = `${amount >= 0 ? '+' : '-'}${formatNumber(Math.abs(amount))} ${wallet.currency.toUpperCase()}`;
-                  const timestamp = transaction.completedAt ?? transaction.createdAt;
-                  const statusLabel = TEXT.transactionStatus[transaction.status];
-                  const title = transaction.groupTitle ?? transaction.planLabel ?? TEXT.transactionUnknownGroup;
-                  const showRefundButton = transaction.status === 'completed' && transaction.direction === 'debit';
-                  return (
-                    <div key={transaction.id} className={styles.transactionCard}>
-                      <div className={styles.transactionHeader}>
-                        <span className={styles.transactionTitle}>{title}</span>
-                        <span className={`${styles.transactionStatus} ${styles[`transactionStatus_${transaction.status}`]}`}>
-                          {statusLabel}
-                        </span>
-                      </div>
-                      <div className={styles.transactionMeta}>
-                        <span>
-                          {transaction.planLabel ?? planLabel({ id: transaction.planId ?? '', days: transaction.planDays ?? 0, price: transaction.planPrice ?? 0 })}
-                          {transaction.gifted ? ` - ${TEXT.transactionGift}` : ''}
-                        </span>
-                        <span>{formatDateTime(timestamp)}</span>
-                      </div>
-                      <div className={styles.transactionFooter}>
-                        <span className={`${styles.transactionAmount} ${amount >= 0 ? styles.transactionAmountCredit : styles.transactionAmountDebit}`}>
-                          {amountDisplay}
-                        </span>
-                        {showRefundButton && (
-                          <Button
-                            mode='outline'
-                            size='s'
-                            disabled={refundProcessing === transaction.id}
-                            loading={refundProcessing === transaction.id}
-                            onClick={() => void handleRefundTransaction(transaction)}
-                          >
-                            {refundProcessing === transaction.id ? TEXT.wallet.refunding : TEXT.wallet.refundAction}
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </>
-        ) : (
-          <Text className={styles.transactionsEmpty}>{TEXT.wallet.empty}</Text>
-        )}
-      </section>
-
       {mode !== 'giveaway' && (
         <>
           <section className={styles.section}>
@@ -646,7 +508,5 @@ function initialsFromTitle(title: string): string {
   }
   return `${words[0].charAt(0)}${words[1].charAt(0)}`.toUpperCase();
 }
-
-
 
 

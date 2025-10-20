@@ -34,6 +34,28 @@ type FirewallEvaluationEvent = {
 const rulesCache = new Map<string, CachedRules>();
 const roleCache = new Map<string, { role: MemberRole; expiresAt: number }>();
 const violationHistory = new Map<string, number[]>();
+class AsyncMutex {
+  private queue = Promise.resolve();
+
+  async runExclusive<T>(callback: () => Promise<T> | T): Promise<T> {
+    const previous = this.queue;
+    let release: () => void;
+    this.queue = previous.then(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release!();
+    }
+  }
+}
+
+const rulesCacheMutex = new AsyncMutex();
 
 export async function runFirewall(ctx: GroupChatContext): Promise<ProcessingAction[]> {
   if (!databaseAvailable || !ctx.chat || !ctx.message) {
@@ -149,8 +171,15 @@ async function loadRules(chatId: string): Promise<CachedRule[]> {
     }))
     .sort((a, b) => a.config.priority - b.config.priority || a.id.localeCompare(b.id));
 
-  rulesCache.set(chatId, { rules: activeRules, expiresAt: now + CACHE_TTL_MS });
-  return activeRules;
+  return rulesCacheMutex.runExclusive(async () => {
+    const existing = rulesCache.get(chatId);
+    const current = Date.now();
+    if (existing && existing.expiresAt > current) {
+      return existing.rules;
+    }
+    rulesCache.set(chatId, { rules: activeRules, expiresAt: current + CACHE_TTL_MS });
+    return activeRules;
+  });
 }
 
 function extractEvent(message: Message.CommonMessage): FirewallEvaluationEvent | null {
@@ -496,16 +525,28 @@ function extractDomains(text: string, entities?: MessageEntity[]): string[] {
 }
 
 // Exported for testing
-export function __resetFirewallCaches(): void {
-  rulesCache.clear();
-  roleCache.clear();
-  violationHistory.clear();
+export async function __resetFirewallCaches(): Promise<void> {
+  await rulesCacheMutex.runExclusive(async () => {
+    rulesCache.clear();
+    roleCache.clear();
+    violationHistory.clear();
+  });
 }
 
-export function invalidateCachedRules(chatId?: string | null): void {
-  if (!chatId) {
-    rulesCache.clear();
-    return;
-  }
-  rulesCache.delete(chatId);
+export async function invalidateCachedRules(chatId?: string | null): Promise<void> {
+  await rulesCacheMutex.runExclusive(async () => {
+    if (!chatId) {
+      rulesCache.clear();
+      roleCache.clear();
+      violationHistory.clear();
+      return;
+    }
+    rulesCache.delete(chatId);
+    const prefix = `${chatId}:`;
+    for (const key of Array.from(roleCache.keys())) {
+      if (key.startsWith(prefix)) {
+        roleCache.delete(key);
+      }
+    }
+  });
 }

@@ -4,6 +4,7 @@ type MaybePromise<T> = T | Promise<T>;
 
 interface Env {
   BACKEND_URL?: string;
+  ALLOWED_ORIGINS?: string;
   ASSETS: {
     fetch(request: Request): MaybePromise<Response>;
   };
@@ -11,12 +12,34 @@ interface Env {
 
 const PROXY_PATH_PREFIXES = ["/api/", "/telegram/"];
 
+function parseAllowedOrigins(raw?: string): string[] {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function determineCorsOrigin(origin: string | null, allowedOrigins: string[]): { header: string | null; vary: boolean } {
+  const allowAll = allowedOrigins.length === 0 || allowedOrigins.includes("*");
+  if (!origin) {
+    return { header: allowAll ? "*" : null, vary: false };
+  }
+  if (allowAll || allowedOrigins.includes(origin)) {
+    return { header: origin, vary: true };
+  }
+  return { header: null, vary: false };
+}
+
 export default {
   async fetch(request: Request, env: Env, _ctx: unknown): Promise<Response> {
+    const allowedOrigins = parseAllowedOrigins(env.ALLOWED_ORIGINS);
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
-      return handleOptions(request);
+      return handleOptions(request, allowedOrigins);
     }
 
     if (url.pathname === "/healthz") {
@@ -27,11 +50,12 @@ export default {
           worker: "tg-firewall",
           timestamp: new Date().toISOString(),
         }),
+        allowedOrigins,
       );
     }
 
     if (shouldProxy(url.pathname)) {
-      return proxyRequest(request, env);
+      return proxyRequest(request, env, allowedOrigins);
     }
 
     return serveStaticAsset(request, env);
@@ -42,13 +66,18 @@ function shouldProxy(pathname: string): boolean {
   return PROXY_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
-function handleOptions(request: Request): Response {
+function handleOptions(request: Request, allowedOrigins: string[]): Response {
   const origin = request.headers.get("Origin");
   const acrHeaders = request.headers.get("Access-Control-Request-Headers");
   const acrMethod = request.headers.get("Access-Control-Request-Method");
 
   const headers = new Headers();
-  headers.set("Access-Control-Allow-Origin", origin ?? "*");
+  const { header: corsOrigin, vary } = determineCorsOrigin(origin, allowedOrigins);
+  if (corsOrigin) {
+    headers.set("Access-Control-Allow-Origin", corsOrigin);
+  } else {
+    headers.delete("Access-Control-Allow-Origin");
+  }
   headers.set("Access-Control-Allow-Methods", acrMethod ?? "GET,POST,PUT,DELETE,OPTIONS");
   if (acrHeaders) {
     headers.set("Access-Control-Allow-Headers", acrHeaders);
@@ -56,13 +85,13 @@ function handleOptions(request: Request): Response {
     headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization");
   }
   headers.set("Access-Control-Max-Age", "86400");
-  if (origin) {
+  if (vary) {
     headers.set("Vary", "Origin");
   }
   return new Response(null, { status: 204, headers });
 }
 
-async function proxyRequest(request: Request, env: Env): Promise<Response> {
+async function proxyRequest(request: Request, env: Env, allowedOrigins: string[]): Promise<Response> {
   const backendOrigin = env.BACKEND_URL;
   if (!backendOrigin) {
     return withCors(
@@ -73,6 +102,7 @@ async function proxyRequest(request: Request, env: Env): Promise<Response> {
         }),
         { status: 500, headers: { "Content-Type": "application/json" } },
       ),
+      allowedOrigins,
     );
   }
 
@@ -97,7 +127,7 @@ async function proxyRequest(request: Request, env: Env): Promise<Response> {
 
   try {
     const response = await fetch(targetUrl.toString(), init);
-    return withCors(request, response);
+    return withCors(request, response, allowedOrigins);
   } catch (error) {
     return withCors(
       request,
@@ -108,6 +138,7 @@ async function proxyRequest(request: Request, env: Env): Promise<Response> {
         }),
         { status: 502, headers: { "Content-Type": "application/json" } },
       ),
+      allowedOrigins,
     );
   }
 }
@@ -145,16 +176,17 @@ async function serveStaticAsset(request: Request, env: Env): Promise<Response> {
   return env.ASSETS.fetch(fallbackRequest);
 }
 
-function withCors(request: Request, response: Response): Response {
+function withCors(request: Request, response: Response, allowedOrigins: string[]): Response {
   const origin = request.headers.get("Origin");
   const headers = new Headers(response.headers);
 
-  if (origin) {
-    headers.set("Access-Control-Allow-Origin", origin);
-    const vary = headers.get("Vary");
-    headers.set("Vary", vary ? `${vary}, Origin` : "Origin");
-  } else if (!headers.has("Access-Control-Allow-Origin")) {
-    headers.set("Access-Control-Allow-Origin", "*");
+  const { header: corsOrigin, vary } = determineCorsOrigin(origin, allowedOrigins);
+  if (corsOrigin) {
+    headers.set("Access-Control-Allow-Origin", corsOrigin);
+  }
+  if (vary) {
+    const existing = headers.get("Vary");
+    headers.set("Vary", existing ? `${existing}, Origin` : "Origin");
   }
 
   if (!headers.has("Access-Control-Allow-Headers")) {

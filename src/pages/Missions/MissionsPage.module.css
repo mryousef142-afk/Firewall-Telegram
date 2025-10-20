@@ -998,6 +998,11 @@
   color: rgba(226, 233, 255, 0.78);
 }
 
+.referralHint {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.65);
+}
+
 .referralLink {
   display: block;
   word-break: break-all;

@@ -71,7 +71,7 @@ export function createFirewallRouter(): Router {
     }
 
     const result = await upsertFirewallRule(payload);
-    invalidateFirewallCache(payload.groupChatId ?? null);
+    await invalidateFirewallCache(payload.groupChatId ?? null);
 
     const stored = await findFirewallRuleById(result.id);
     res.status(payload.id ? 200 : 201).json({
@@ -96,7 +96,7 @@ export function createFirewallRouter(): Router {
       return;
     }
     await deleteFirewallRule(req.params.id);
-    invalidateFirewallCache(rule.chatId ?? null);
+    await invalidateFirewallCache(rule.chatId ?? null);
     res.status(204).send();
   });
 

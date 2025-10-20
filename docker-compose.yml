@@ -6,9 +6,9 @@ services:
     container_name: tgfw-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: tgfw_user
-      POSTGRES_PASSWORD: tgfw_pass
-      POSTGRES_DB: tgfw
+      POSTGRES_USER: ${DB_USER:-tgfw_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change-me}
+      POSTGRES_DB: ${DB_NAME:-tgfw}
     ports:
       - "5432:5432"
     volumes:

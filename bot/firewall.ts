@@ -13,9 +13,9 @@ export function installFirewall(_bot: Telegraf): void {
   logger.info("firewall engine enabled via processing pipeline");
 }
 
-export function invalidateFirewallCache(chatId?: string | null): void {
+export async function invalidateFirewallCache(chatId?: string | null): Promise<void> {
   if (!databaseAvailable) {
     return;
   }
-  invalidateCachedRules(chatId ?? undefined);
+  await invalidateCachedRules(chatId ?? undefined);
 }

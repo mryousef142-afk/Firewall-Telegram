@@ -4,6 +4,7 @@ import { Avatar, Button, Card, Snackbar, Text, Title } from "@telegram-apps/tele
 
 import { useOwnerProfile } from "@/features/dashboard/useOwnerProfile.ts";
 import { dashboardConfig } from "@/config/dashboard.ts";
+import { verifyChannelMembership } from "@/features/missions/api.ts";
 
 import styles from "./MissionsPage.module.css";
 
@@ -31,6 +32,12 @@ type MissionIconKey =
   | "security"
   | "insight";
 
+type MissionVerification =
+  | {
+      kind: "telegram-channel";
+      channelUsername: string;
+    };
+
 type Mission = {
   id: string;
   title: string;
@@ -39,6 +46,7 @@ type Mission = {
   icon: MissionIconKey;
   ctaLabel?: string;
   ctaLink?: string;
+  verification?: MissionVerification;
 };
 
 type Reward = {
@@ -58,12 +66,58 @@ type DailyTaskChannelMission = {
 type CompletionState = Record<MissionCategory, Set<string>>;
 
 type ReferralStats = {
-  invites: number;
+  tracked: number;
+  activated: number;
   xpEarned: number;
+};
+
+type ReferralSignal = {
+  referralId?: string;
+  reward?: number;
 };
 
 
 const LEVEL_THRESHOLDS = [0, 250, 600, 1050, 1600, 2200, 2850, 3550, 4300, 5100, 5950, 6850];
+const DAILY_WHEEL_ID = "daily-wheel";
+const DAILY_WHEEL_MIN_REWARD = 1;
+const DAILY_WHEEL_MAX_REWARD = 20;
+const FIREWALL_CHANNEL_USERNAME = "firewall";
+const FIREWALL_CHANNEL_URL = "https://t.me/firewall";
+
+function extractChannelUsername(link: string): string | null {
+  const trimmed = link.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith("@")) {
+    return trimmed.slice(1).toLowerCase();
+  }
+
+  try {
+    const candidateUrl = trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
+    const url = new URL(candidateUrl);
+    if (!url.hostname.endsWith("t.me")) {
+      return null;
+    }
+    const pathname = url.pathname.replace(/^\/+/, "");
+    if (!pathname || pathname.startsWith("+")) {
+      return null;
+    }
+    const base = pathname.split("/")[0] ?? null;
+    return base ? base.toLowerCase() : null;
+  } catch {
+    if (trimmed.startsWith("t.me/")) {
+      const candidate = trimmed.slice(5).replace(/^\/+/, "");
+      if (candidate && !candidate.startsWith("+")) {
+        const base = candidate.split("/")[0] ?? null;
+        return base ? base.toLowerCase() : null;
+      }
+    }
+  }
+
+  return null;
+}
 
 const MISSIONS: Record<MissionCategory, Mission[]> = {
   daily: [
@@ -71,29 +125,15 @@ const MISSIONS: Record<MissionCategory, Mission[]> = {
       id: "check-in",
       title: "Check in today",
       description: "Open Firewall once to refresh statistics and keep your streak alive.",
-      xp: 10,
+      xp: 20,
       icon: "check",
     },
     {
-      id: "review-log",
-      title: "Review the activity log",
-      description: "Scan today’s joins and leaves for anything suspicious.",
-      xp: 12,
-      icon: "insight",
-    },
-    {
-      id: "share-tip",
-      title: "Share a safety tip",
-      description: "Post a short reminder in your main group about staying secure.",
-      xp: 12,
-      icon: "broadcast",
-    },
-    {
-      id: "welcome-newcomers",
-      title: "Welcome new members",
-      description: "Greet newcomers with a friendly message and pin the rules.",
-      xp: 15,
-      icon: "chat",
+      id: DAILY_WHEEL_ID,
+      title: "Spin the daily wheel",
+      description: "Take your chance on the XP wheel and earn between 1 and 20 bonus XP.",
+      xp: DAILY_WHEEL_MAX_REWARD,
+      icon: "trophy",
     },
   ],
   weekly: [
@@ -101,52 +141,59 @@ const MISSIONS: Record<MissionCategory, Mission[]> = {
       id: "renew-weekly",
       title: "Renew one group credit",
       description: "Extend uptime for any managed group by at least one week.",
-      xp: 45,
+      xp: 70,
       icon: "renew",
     },
     {
-      id: "create-giveaway",
-      title: "Launch a giveaway",
-      description: "Create one giveaway to reward members and boost engagement.",
-      xp: 50,
-      icon: "gift",
+      id: "complete-daily-3",
+      title: "Reach a 3-day streak",
+      description: "Hit a three-day daily streak (or higher) during the current week.",
+      xp: 70,
+      icon: "check",
     },
     {
-      id: "weekly-recap",
-      title: "Publish the weekly recap",
-      description: "Send a security update or highlights recap to your moderator team.",
-      xp: 30,
-      icon: "analytics",
-    },
-    {
-      id: "referral-push",
-      title: "Earn two referral signups",
-      description: "Invite two trusted members using your referral link and onboard them.",
-      xp: 45,
+      id: "weekly-referral-activated",
+      title: "Activate one referral",
+      description: "Bring at least one new team that tops up their group and activates the referral.",
+      xp: 70,
       icon: "invite",
+    },
+    {
+      id: "rookie-badge-progress",
+      title: "Wear the Rookie badge",
+      description: "Equip the 🌟 Rookie badge in the marketplace to lock in your weekly reward.",
+      xp: 70,
+      icon: "trophy",
     },
   ],
   monthly: [
     {
-      id: "complete-daily",
-      title: "Complete 20 daily missions",
-      description: "Stack enough daily completions to secure the streak bonus.",
-      xp: 200,
+      id: "streak-day-6",
+      title: "Hold a 6-day streak",
+      description: "Keep your daily streak alive for six consecutive days (or more) this month.",
+      xp: 180,
       icon: "brain",
     },
     {
-      id: "referral-milestone",
-      title: "Unlock 10 referral signups",
-      description: "Grow the network by bringing ten new teams on board this month.",
-      xp: 220,
+      id: "monthly-referrals",
+      title: "Activate three referrals",
+      description: "Bring three new teams that finish their first Stars top-up during the month.",
+      xp: 180,
       icon: "invite",
     },
     {
-      id: "store-redemption",
-      title: "Redeem an XP reward",
-      description: "Spend your XP in the marketplace on credits, Stars, or cosmetics.",
-      xp: 160,
-      icon: "stars",
+      id: "monthly-giveaway",
+      title: "Host a giveaway",
+      description: "Launch a giveaway campaign to reward your community this month.",
+      xp: 180,
+      icon: "gift",
+    },
+    {
+      id: "master-badge-progress",
+      title: "Wear the Master badge",
+      description: "Equip the 🎯 Master badge from the marketplace to collect this reward.",
+      xp: 180,
+      icon: "trophy",
     },
   ],
   general: [
@@ -154,15 +201,14 @@ const MISSIONS: Record<MissionCategory, Mission[]> = {
       id: "join-channel",
       title: "Join the official Firewall channel",
       description: "Subscribe to release notes, incident alerts, and roadmap votes.",
-      xp: 15,
+      xp: 30,
       icon: "link",
-    },
-    {
-      id: "write-review",
-      title: "Share your Firewall story",
-      description: "Post a short review that helps others discover the bot.",
-      xp: 20,
-      icon: "review",
+      ctaLabel: "Open channel",
+      ctaLink: FIREWALL_CHANNEL_URL,
+      verification: {
+        kind: "telegram-channel",
+        channelUsername: FIREWALL_CHANNEL_USERNAME,
+      },
     },
     {
       id: "add-group",
@@ -172,71 +218,136 @@ const MISSIONS: Record<MissionCategory, Mission[]> = {
       icon: "groups",
     },
     {
-      id: "auto-delete",
-      title: "Enable auto-delete bot messages",
-      description: "Keep chats tidy by cleaning system confirmations automatically.",
-      xp: 25,
-      icon: "puzzle",
+      id: "badge-rookie",
+      title: "Equip the Rookie badge",
+      description: "Wear the 🌟 Rookie badge to celebrate your Firewall debut.",
+      xp: 30,
+      icon: "trophy",
     },
     {
-      id: "view-analytics",
-      title: "Review analytics three times",
-      description: "Monitor peaks and drops so you can react ahead of time.",
-      xp: 20,
-      icon: "analytics",
+      id: "badge-active",
+      title: "Equip the Active badge",
+      description: "Show your consistent dedication by wearing the ⚡ Active badge.",
+      xp: 40,
+      icon: "trophy",
     },
     {
-      id: "broadcast",
-      title: "Send a mission broadcast",
-      description: "Announce weekly objectives to spark teamwork in your community.",
-      xp: 20,
-      icon: "broadcast",
+      id: "badge-master",
+      title: "Equip the Master badge",
+      description: "Display the 🎯 Master badge to inspire your moderator crew.",
+      xp: 50,
+      icon: "trophy",
     },
     {
-      id: "secure-admins",
-      title: "Secure all admins",
-      description: "Confirm that every teammate uses two-factor authentication.",
-      xp: 35,
-      icon: "security",
+      id: "badge-elite",
+      title: "Equip the Elite badge",
+      description: "Flex your 💎 Elite status to motivate the entire community.",
+      xp: 60,
+      icon: "trophy",
     },
     {
-      id: "insight-note",
-      title: "Log an insight",
-      description: "Capture a moderation insight or lesson in your shared notes.",
-      xp: 20,
-      icon: "insight",
+      id: "badge-legend",
+      title: "Equip the Legend badge",
+      description: "Claim victory by wearing the 👑 Legend badge in your profile.",
+      xp: 80,
+      icon: "trophy",
+    },
+    {
+      id: "referral-1",
+      title: "Activate one referral",
+      description: "Bring a single team that completes their first Stars top-up.",
+      xp: 40,
+      icon: "invite",
+    },
+    {
+      id: "referral-3",
+      title: "Activate three referrals",
+      description: "Grow the network with three newly activated referrals.",
+      xp: 70,
+      icon: "invite",
+    },
+    {
+      id: "referral-6",
+      title: "Activate six referrals",
+      description: "Keep the momentum going by activating six referrals overall.",
+      xp: 120,
+      icon: "invite",
+    },
+    {
+      id: "referral-9",
+      title: "Activate nine referrals",
+      description: "Secure nine activated referrals to earn this milestone reward.",
+      xp: 180,
+      icon: "invite",
+    },
+    {
+      id: "referral-30",
+      title: "Activate thirty referrals",
+      description: "Lead the leaderboard by activating thirty referrals in total.",
+      xp: 400,
+      icon: "invite",
     },
   ],
 };
 
 const REWARDS: Reward[] = [
   {
-    id: "reward-credit",
+    id: "reward-uptime-7",
     title: "7-day uptime credit",
-    cost: 1200,
-    description: "Instantly extend any group by a full week.",
-  },
-  {
-    id: "reward-badge",
-    title: "Firewall Elite badge",
     cost: 800,
-    description: "Unlock profile flair that highlights your dedication.",
+    description: "Extend any protected group by seven days.",
   },
   {
-    id: "reward-stars",
-    title: "50 bonus Stars",
-    cost: 1000,
-    description: "Spend them on renewals, boosts, or community giveaways.",
-  },
-  {
-    id: "reward-skin",
-    title: "Command Center skin",
+    id: "reward-uptime-14",
+    title: "14-day uptime bundle",
     cost: 1400,
-    description: "Give your dashboard a limited-edition visual theme.",
+    description: "Lock in two full weeks of Firewall coverage.",
+  },
+  {
+    id: "reward-uptime-30",
+    title: "30-day uptime bundle",
+    cost: 2500,
+    description: "Secure a full month of uninterrupted protection.",
+  },
+  {
+    id: "badge-rookie",
+    title: "Rookie badge",
+    cost: 200,
+    description: "Equip the Rookie flair to mark your Firewall debut.",
+  },
+  {
+    id: "badge-active",
+    title: "Active badge",
+    cost: 500,
+    description: "Show you're consistently on duty with the Active badge.",
+  },
+  {
+    id: "badge-master",
+    title: "Master badge",
+    cost: 1000,
+    description: "Display the Master badge to celebrate serious grind.",
+  },
+  {
+    id: "badge-elite",
+    title: "Elite badge",
+    cost: 2000,
+    description: "Flex Elite status after weeks of strategic play.",
+  },
+  {
+    id: "badge-legend",
+    title: "Legend badge",
+    cost: 5000,
+    description: "Claim the ultimate Legend badge and lead the charts.",
   },
 ];
 
-const REFERRAL_XP = 60;
+const REFERRAL_XP = 100;
+
+const CATEGORY_BONUSES: Partial<Record<MissionCategory, { xp: number; label: string }>> = {
+  daily: { xp: 150, label: "Daily streak bonus" },
+  weekly: { xp: 400, label: "Weekly completion bonus" },
+  monthly: { xp: 1000, label: "Monthly mastery bonus" },
+};
 
 const ICON_PALETTE: Record<MissionIconKey, { primary: string; secondary: string }> = {
   check: { primary: "var(--app-color-accent-cyan)", secondary: "rgba(30, 162, 255, 0.28)" },
@@ -277,25 +388,44 @@ const TEXT = {
   ],
   streakLabel: (days: number) => `${days} day streak`,
   multiplierHint: "XP booster",
+  dailyBonusHint: "Finish every task to claim the +150 XP streak bonus.",
+  weeklyBonusHint: "Clear every challenge to trigger the +400 XP weekly payout.",
+  monthlyBonusHint: "Lock in all monthly goals to collect the +1000 XP mastery bonus.",
   openStore: "Open XP store",
   copyReferral: "Copy invite link",
-  logReferral: "Log referral",
   storeTitle: "XP Marketplace",
-  storeSubtitle: "Spend your XP on credits, Stars, and cosmetics.",
+  storeSubtitle: "Spend your XP on uptime bundles and exclusive badges.",
   storeRedeemLabel: "Redeem",
   storeRedeem: (title: string) => `Redeemed ${title}!`,
   storeInsufficient: "Not enough XP to redeem that reward yet.",
   referralTitle: "Referral booster",
-  referralSubtitle: "Share your invite link to earn XP whenever a new team joins.",
+  referralSubtitle: "Share your invite link. XP unlocks when teammates top up their first group with Stars.",
   referralCopied: "Referral link copied to clipboard.",
-  referralLogged: (xp: number) => `+${xp} XP from a new referral.`,
-  referralInvites: (count: number) => `${count} referral${count === 1 ? "" : "s"} logged`,
+  referralLogged: (xp: number) => `+${xp} XP from an activated referral.`,
+  referralTracked: (count: number) => `${count.toLocaleString()} referral${count === 1 ? "" : "s"} joined`,
+  referralActivated: (count: number) => `${count.toLocaleString()} activated`,
+  referralPending: (count: number) => `${count.toLocaleString()} pending activation`,
+  referralXpEarned: (xp: number) => `XP earned: ${xp.toLocaleString()}`,
+  referralHint: "Referrals grant XP only after their first Stars top-up.",
   markComplete: "Mark complete",
   logged: "Logged",
   toastAlreadyLogged: "Mission already logged for today.",
-  toast: (mission: Mission) => `+${mission.xp} XP - ${mission.title}`,
+  toastReward: (xpEarned: number, title: string) => `+${xpEarned} XP - ${title}`,
+  toastWithBonus: (xpEarned: number, title: string, bonusLabel: string, bonusXp: number) =>
+    `+${xpEarned} XP - ${title} | Bonus +${bonusXp} XP (${bonusLabel})`,
   toastLevelUp: (level: number) => `Level up! You reached level ${level}.`,
+  verify: "Verify",
+  verifyInProgress: "Verifying...",
+  channelVerifyFailed: "Please join the channel before claiming this reward.",
+  channelVerifyError: "We couldn't verify your channel membership. Try again shortly.",
 };
+
+function formatMissionXpLabel(mission: Mission): string {
+  if (mission.id === DAILY_WHEEL_ID) {
+    return `+${DAILY_WHEEL_MIN_REWARD}-${DAILY_WHEEL_MAX_REWARD} XP`;
+  }
+  return `+${mission.xp} XP`;
+}
 
 function computeLevel(xp: number) {
   let level = 1;
@@ -334,6 +464,7 @@ export function MissionsPage() {
   const [streak] = useState(7);
   const [seasonMultiplier] = useState(1.4);
   const [snackbar, setSnackbar] = useState<string | null>(null);
+  const [verifyingMissionId, setVerifyingMissionId] = useState<string | null>(null);
   const [completion, setCompletion] = useState<CompletionState>(() => ({
     daily: new Set<string>(),
     weekly: new Set<string>(),
@@ -341,9 +472,11 @@ export function MissionsPage() {
     general: new Set<string>(),
   }));
   const [dailyTaskChannel, setDailyTaskChannel] = useState<DailyTaskChannelMission | null>(null);
-  const [referralStats, setReferralStats] = useState<ReferralStats>({ invites: 0, xpEarned: 0 });
+  const [referralStats, setReferralStats] = useState<ReferralStats>({ tracked: 0, activated: 0, xpEarned: 0 });
   const [redeemedRewards, setRedeemedRewards] = useState<Record<string, number>>({});
   const storeSectionRef = useRef<HTMLDivElement | null>(null);
+  const trackedReferrals = useRef<Set<string>>(new Set());
+  const activatedReferrals = useRef<Set<string>>(new Set());
 
   const levelInfo = useMemo(() => computeLevel(xp), [xp]);
   const missionsByCategory = useMemo(() => {
@@ -352,6 +485,7 @@ export function MissionsPage() {
     }
 
     const sanitizedXp = Math.max(1, Math.round(dailyTaskChannel.xp));
+    const channelUsername = extractChannelUsername(dailyTaskChannel.channelLink);
     const mission: Mission = {
       id: "daily-channel-mission",
       title: dailyTaskChannel.buttonLabel,
@@ -361,6 +495,12 @@ ${dailyTaskChannel.channelLink}`,
       icon: "link",
       ctaLabel: "Open channel",
       ctaLink: dailyTaskChannel.channelLink,
+      verification: channelUsername
+        ? {
+            kind: "telegram-channel",
+            channelUsername,
+          }
+        : undefined,
     };
 
     const baseDaily = MISSIONS.daily.filter((item) => item.id !== mission.id);
@@ -383,6 +523,7 @@ ${dailyTaskChannel.channelLink}`,
     const separator = base.includes("?") ? "&" : "?";
     return `${base}${separator}ref=${sanitized || "commander"}`;
   }, [displayName, username]);
+  const referralPending = Math.max(0, referralStats.tracked - referralStats.activated);
 
   const handleCopyReferral = useCallback(async () => {
     try {
@@ -397,12 +538,6 @@ ${dailyTaskChannel.channelLink}`,
       window.open(referralLink, "_blank");
     }
   }, [referralLink]);
-
-  const handleLogReferral = useCallback(() => {
-    setReferralStats((prev: ReferralStats) => ({ invites: prev.invites + 1, xpEarned: prev.xpEarned + REFERRAL_XP }));
-    setXp((prev) => prev + REFERRAL_XP);
-    setSnackbar(TEXT.referralLogged(REFERRAL_XP));
-  }, []);
 
   const handleOpenStore = useCallback(() => {
     storeSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -471,28 +606,148 @@ ${dailyTaskChannel.channelLink}`,
     };
   }, []);
 
-  const handleMissionComplete = (category: MissionCategory, mission: Mission) => {
-    if (completion[category].has(mission.id)) {
-      setSnackbar(TEXT.toastAlreadyLogged);
-      return;
-    }
+  useEffect(() => {
+    const ensureId = (prefix: string, id?: string) => id?.trim() && id.trim().length > 0 ? id.trim() : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    const previousLevel = levelInfo.level;
-    const nextXp = xp + mission.xp;
-    const nextLevelInfo = computeLevel(nextXp);
+    const handleTracked = (event: Event) => {
+      const custom = event as CustomEvent<ReferralSignal>;
+      const detail = custom.detail ?? {};
+      const referralId = ensureId("ref", detail.referralId);
+      if (trackedReferrals.current.has(referralId)) {
+        return;
+      }
+      trackedReferrals.current.add(referralId);
+      setReferralStats((prev) => ({
+        tracked: trackedReferrals.current.size,
+        activated: prev.activated,
+        xpEarned: prev.xpEarned,
+      }));
+    };
 
-    setCompletion((prev) => {
-      const next: CompletionState = {
-        ...prev,
-        [category]: new Set(prev[category]),
-      };
-      next[category].add(mission.id);
-      return next;
-    });
+    const handleActivated = (event: Event) => {
+      const custom = event as CustomEvent<ReferralSignal>;
+      const detail = custom.detail ?? {};
+      const referralId = ensureId("activation", detail.referralId);
+      if (activatedReferrals.current.has(referralId)) {
+        return;
+      }
+      activatedReferrals.current.add(referralId);
+      trackedReferrals.current.add(referralId);
+      const reward = typeof detail.reward === "number" && Number.isFinite(detail.reward) ? detail.reward : REFERRAL_XP;
+      setReferralStats((prev) => ({
+        tracked: trackedReferrals.current.size,
+        activated: activatedReferrals.current.size,
+        xpEarned: prev.xpEarned + reward,
+      }));
+      setXp((prev) => prev + reward);
+      setSnackbar(TEXT.referralLogged(reward));
+    };
 
-    setXp(nextXp);
-    setSnackbar(nextLevelInfo.level > previousLevel ? TEXT.toastLevelUp(nextLevelInfo.level) : TEXT.toast(mission));
-  };
+    window.addEventListener("referral:tracked", handleTracked);
+    window.addEventListener("referral:activated", handleActivated);
+
+    return () => {
+      window.removeEventListener("referral:tracked", handleTracked);
+      window.removeEventListener("referral:activated", handleActivated);
+    };
+  }, [setSnackbar]);
+
+  const verifyMissionRequirement = useCallback(
+    async (mission: Mission) => {
+      if (!mission.verification) {
+        return true;
+      }
+
+      if (mission.verification.kind === "telegram-channel") {
+        const username = mission.verification.channelUsername.trim();
+        if (!username) {
+          setSnackbar(TEXT.channelVerifyError);
+          return false;
+        }
+
+        try {
+          const isMember = await verifyChannelMembership(username);
+          if (!isMember) {
+            setSnackbar(TEXT.channelVerifyFailed);
+          }
+          return isMember;
+        } catch (error) {
+          console.error("[missions] channel verification failed", error);
+          setSnackbar(TEXT.channelVerifyError);
+          return false;
+        }
+      }
+
+      return true;
+    },
+    [setSnackbar],
+  );
+
+  const handleMissionComplete = useCallback(
+    async (category: MissionCategory, mission: Mission) => {
+      if (completion[category].has(mission.id)) {
+        setSnackbar(TEXT.toastAlreadyLogged);
+        return;
+      }
+
+      const previousLevel = levelInfo.level;
+      const completedCount = completion[category].size;
+      const totalInCategory = missionsByCategory[category]?.length ?? 0;
+      const bonusMeta = CATEGORY_BONUSES[category];
+
+      let earnedXp = Number.isFinite(mission.xp) ? Math.max(0, Math.trunc(mission.xp)) : 0;
+      if (mission.id === DAILY_WHEEL_ID) {
+        earnedXp =
+          Math.floor(Math.random() * (DAILY_WHEEL_MAX_REWARD - DAILY_WHEEL_MIN_REWARD + 1)) +
+          DAILY_WHEEL_MIN_REWARD;
+      }
+
+      if (mission.verification) {
+        setVerifyingMissionId(mission.id);
+        try {
+          const verified = await verifyMissionRequirement(mission);
+          if (!verified) {
+            return;
+          }
+        } finally {
+          setVerifyingMissionId(null);
+        }
+      }
+
+      const bonusXp =
+        bonusMeta && totalInCategory > 0 && completedCount + 1 === totalInCategory ? bonusMeta.xp : 0;
+      const nextXp = xp + earnedXp + bonusXp;
+      const nextLevelInfo = computeLevel(nextXp);
+
+      setCompletion((prev) => {
+        const next: CompletionState = {
+          ...prev,
+          [category]: new Set(prev[category]),
+        };
+        next[category].add(mission.id);
+        return next;
+      });
+
+      setXp(nextXp);
+      if (nextLevelInfo.level > previousLevel) {
+        setSnackbar(TEXT.toastLevelUp(nextLevelInfo.level));
+        return;
+      }
+      if (bonusXp > 0 && bonusMeta) {
+        setSnackbar(TEXT.toastWithBonus(earnedXp, mission.title, bonusMeta.label, bonusXp));
+        return;
+      }
+      setSnackbar(TEXT.toastReward(earnedXp, mission.title));
+    },
+    [
+      completion,
+      levelInfo.level,
+      missionsByCategory,
+      verifyMissionRequirement,
+      xp,
+      setSnackbar,
+    ],
+  );
 
   return (
     <div className={styles.page} dir="ltr">
@@ -550,7 +805,7 @@ ${dailyTaskChannel.channelLink}`,
           <Text className={styles.statValue}>
             {completion.daily.size}/{missionsByCategory.daily.length} done
           </Text>
-          <Text className={styles.statHint}>Finish every task to keep your streak multiplier alive.</Text>
+          <Text className={styles.statHint}>{TEXT.dailyBonusHint}</Text>
         </Card>
         <Card className={styles.statCard}>
           <Text weight="2" className={styles.statTitle}>
@@ -564,7 +819,7 @@ ${dailyTaskChannel.channelLink}`,
               {completion.weekly.size}/{missionsByCategory.weekly.length}
             </Text>
           </div>
-          <Text className={styles.statHint}>Wrap up the remaining challenges before Sunday midnight.</Text>
+          <Text className={styles.statHint}>{TEXT.weeklyBonusHint}</Text>
         </Card>
         <Card className={styles.statCard}>
           <Text weight="2" className={styles.statTitle}>
@@ -578,7 +833,7 @@ ${dailyTaskChannel.channelLink}`,
               {completion.monthly.size}/{missionsByCategory.monthly.length}
             </Text>
           </div>
-          <Text className={styles.statHint}>High-impact objectives that define your season rank.</Text>
+          <Text className={styles.statHint}>{TEXT.monthlyBonusHint}</Text>
         </Card>
         <Card className={styles.statCard}>
           <Text weight="2" className={styles.statTitle}>
@@ -616,6 +871,14 @@ ${dailyTaskChannel.channelLink}`,
         {missions.map((mission) => {
           const completed = activeCompletion.has(mission.id);
           const missionLink = mission.ctaLink;
+          const isVerifying = verifyingMissionId === mission.id;
+          const actionLabel = completed
+            ? TEXT.logged
+            : mission.verification
+              ? isVerifying
+                ? TEXT.verifyInProgress
+                : TEXT.verify
+              : TEXT.markComplete;
           return (
             <Card
               key={mission.id}
@@ -632,7 +895,7 @@ ${dailyTaskChannel.channelLink}`,
                   <Text className={styles.missionDescription}>{mission.description}</Text>
                 </div>
                 <div className={styles.missionMeta}>
-                  <span className={styles.missionXp}>+{mission.xp} XP</span>
+                  <span className={styles.missionXp}>{formatMissionXpLabel(mission)}</span>
                   <span className={`${styles.statusChip} ${completed ? styles.statusChipDone : styles.statusChipPending}`}>
                     {completed ? "Completed" : "Pending"}
                   </span>
@@ -647,10 +910,12 @@ ${dailyTaskChannel.channelLink}`,
                 <Button
                   size="s"
                   mode={completed ? "plain" : "filled"}
-                  onClick={() => handleMissionComplete(activeTab, mission)}
-                  disabled={completed}
+                  onClick={() => {
+                    void handleMissionComplete(activeTab, mission);
+                  }}
+                  disabled={completed || isVerifying}
                 >
-                  {completed ? TEXT.logged : TEXT.markComplete}
+                  {actionLabel}
                 </Button>
               </div>
             </Card>
@@ -699,16 +964,16 @@ ${dailyTaskChannel.channelLink}`,
           </Text>
           <Text className={styles.referralSubtitle}>{TEXT.referralSubtitle}</Text>
           <div className={styles.referralStats}>
-            <Text weight="2">{TEXT.referralInvites(referralStats.invites)}</Text>
-            <Text>{`XP earned: ${referralStats.xpEarned.toLocaleString()}`}</Text>
+            <Text weight="2">{TEXT.referralTracked(referralStats.tracked)}</Text>
+            <Text weight="2">{TEXT.referralActivated(referralStats.activated)}</Text>
+            <Text>{TEXT.referralPending(referralPending)}</Text>
+            <Text>{TEXT.referralXpEarned(referralStats.xpEarned)}</Text>
           </div>
+          <Text className={styles.referralHint}>{TEXT.referralHint}</Text>
           <code className={styles.referralLink}>{referralLink}</code>
           <div className={styles.referralActions}>
             <Button mode="plain" size="s" onClick={handleCopyReferral}>
               {TEXT.copyReferral}
-            </Button>
-            <Button mode="filled" size="s" onClick={handleLogReferral}>
-              {`${TEXT.logReferral} (+${REFERRAL_XP} XP)`}
             </Button>
           </div>
         </Card>
@@ -733,3 +998,6 @@ function MissionIcon({ kind, completed }: { kind: MissionIconKey; completed: boo
     </div>
   );
 }
+
+
+

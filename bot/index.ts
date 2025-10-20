@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
+import rateLimit from "express-rate-limit";
+import { v4 as uuidv4 } from "uuid";
 import { Markup, Telegraf, type Context } from "telegraf";
 
 import { loadBotContent } from "./content.js";
@@ -49,11 +51,14 @@ import {
   setButtonLabels,
   setPanelSettings,
   setWelcomeMessages,
+  readOwnerSessionState,
+  writeOwnerSessionState,
   type GroupRecord,
   type StarsPlanRecord,
   type StarsState,
   type StarsPurchaseInput,
   type PromoSlideRecord,
+  type OwnerSessionState,
   upsertGroup
 } from "./state.js";
 import type { FirewallRuleConfig, RuleAction, RuleCondition, RuleEscalation } from "../shared/firewall.js";
@@ -515,38 +520,19 @@ type FirewallRuleSummary = {
   updatedAt: Date;
 };
 
-type OwnerSession =
-  | { state: "idle" }
-  | { state: "awaitingAddAdmin" }
-  | { state: "awaitingRemoveAdmin" }
-  | { state: "awaitingManageGroup" }
-  | { state: "awaitingIncreaseCredit" }
-  | { state: "awaitingDecreaseCredit" }
-  | { state: "awaitingBroadcastMessage" }
-  | { state: "awaitingBroadcastConfirm"; pending: { message: string } }
-  | { state: "awaitingSliderPhoto" }
-  | { state: "awaitingSliderLink"; pending: { fileId: string; width: number; height: number } }
-  | { state: "awaitingSliderRemoval" }
-  | { state: "awaitingBanUserId" }
-  | { state: "awaitingUnbanUserId" }
-  | { state: "awaitingDailyTaskLink" }
-  | { state: "awaitingDailyTaskButton"; pending: { channelLink: string } }
-  | { state: "awaitingDailyTaskDescription"; pending: { channelLink: string; buttonLabel: string } }
-  | { state: "awaitingDailyTaskXp"; pending: { channelLink: string; buttonLabel: string; description: string } }
-  | { state: "awaitingSettingsFreeDays" }
-  | { state: "awaitingSettingsStars" }
-  | { state: "awaitingSettingsWelcomeMessages" }
-  | { state: "awaitingSettingsGpidHelp" }
-  | { state: "awaitingSettingsLabels" }
-  | { state: "awaitingSettingsChannelText" }
-  | { state: "awaitingSettingsInfoCommands" }
-  | { state: "awaitingFirewallRuleCreate" }
-  | { state: "awaitingFirewallRuleEdit"; pending: { ruleId: string; chatId: string | null } };
+type OwnerSession = OwnerSessionState;
 
-let ownerSession: OwnerSession = { state: "idle" };
+let ownerSession: OwnerSession = readOwnerSessionState();
+
+type RequestWithId = Request & { id?: string };
+
+function setOwnerSession(next: OwnerSession): OwnerSession {
+  ownerSession = writeOwnerSessionState(next);
+  return ownerSession;
+}
 
 function resetOwnerSession() {
-  ownerSession = { state: "idle" };
+  setOwnerSession({ state: "idle" });
 }
 
 function nextPromoSlideId(): string {
@@ -929,7 +915,7 @@ async function handleFirewallRuleInput(
 
   const { upsertFirewallRule } = await import("../server/db/firewallRepository.js");
   await upsertFirewallRule(payload);
-  invalidateFirewallCache(payload.groupChatId ?? (options.mode === "edit" ? options.chatId ?? null : null));
+  await invalidateFirewallCache(payload.groupChatId ?? (options.mode === "edit" ? options.chatId ?? null : null));
   resetOwnerSession();
   await showOwnerFirewallMenu(ctx, ownerMessages.firewallSaved);
 }
@@ -1044,10 +1030,12 @@ function asyncHandler(handler: (req: Request, res: Response) => Promise<void>) {
     handler(req, res).catch((error) => {
       const status = resolveHttpStatus(error);
       const message = error instanceof Error ? error.message : "Unexpected server error";
+      const safeMessage = status >= 500 ? "Internal server error" : message;
       if (status >= 500) {
-        console.error("[api] Handler error:", error);
+        const reqWithId = req as RequestWithId;
+        console.error("[api] Handler error:", { requestId: reqWithId.id, error });
       }
-      res.status(status).json({ error: message });
+      res.status(status).json({ error: safeMessage });
     });
   };
 }
@@ -1118,7 +1106,9 @@ function registerApiRoutes(app: express.Express): void {
         res.json(payload);
       } catch (error) {
         const status = resolveHttpStatus(error);
-        res.status(status).json({ error: error instanceof Error ? error.message : "Failed to record purchase" });
+        const message = error instanceof Error ? error.message : "Failed to record purchase";
+        const safeMessage = status >= 500 ? "Internal server error" : message;
+        res.status(status).json({ error: safeMessage });
       }
     }),
   );
@@ -1180,7 +1170,9 @@ function registerApiRoutes(app: express.Express): void {
         res.json(result);
       } catch (error) {
         const status = resolveHttpStatus(error);
-        res.status(status).json({ error: error instanceof Error ? error.message : "Failed to complete gift" });
+        const message = error instanceof Error ? error.message : "Failed to complete gift";
+        const safeMessage = status >= 500 ? "Internal server error" : message;
+        res.status(status).json({ error: safeMessage });
       }
     }),
   );
@@ -1370,7 +1362,7 @@ bot.action(actionId("ownerAddAdmin"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingAddAdmin" };
+  setOwnerSession({ state: "awaitingAddAdmin" });
   await respondWithOwnerView(ctx, `${ownerMessages.addAdmin}\n\n${formatAdminsSummary()}`, buildOwnerNavigationKeyboard());
 });
 
@@ -1379,7 +1371,7 @@ bot.action(actionId("ownerRemoveAdmin"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingRemoveAdmin" };
+  setOwnerSession({ state: "awaitingRemoveAdmin" });
   await respondWithOwnerView(
     ctx,
     `${ownerMessages.removeAdmin}\n\n${formatAdminsSummary()}`,
@@ -1392,7 +1384,7 @@ bot.action(actionId("ownerManageGroup"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingManageGroup" };
+  setOwnerSession({ state: "awaitingManageGroup" });
   const snapshot = formatGroupSnapshot();
   const message = `${ownerMessages.manageGroup}\n\n${snapshot}`;
   await respondWithOwnerView(ctx, message, buildOwnerNavigationKeyboard());
@@ -1412,7 +1404,7 @@ bot.action(actionId("ownerIncreaseCredit"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingIncreaseCredit" };
+  setOwnerSession({ state: "awaitingIncreaseCredit" });
   await respondWithOwnerView(ctx, ownerMessages.increaseCredit, buildOwnerNavigationKeyboard());
 });
 
@@ -1421,7 +1413,7 @@ bot.action(actionId("ownerDecreaseCredit"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingDecreaseCredit" };
+  setOwnerSession({ state: "awaitingDecreaseCredit" });
   await respondWithOwnerView(ctx, ownerMessages.decreaseCredit, buildOwnerNavigationKeyboard());
 });
 
@@ -1430,7 +1422,7 @@ bot.action(actionId("ownerBroadcast"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingBroadcastMessage" };
+  setOwnerSession({ state: "awaitingBroadcastMessage" });
   await respondWithOwnerView(ctx, ownerMessages.broadcast, buildOwnerNavigationKeyboard());
 });
 
@@ -1467,7 +1459,7 @@ bot.action(actionId("ownerFirewallAdd"), async (ctx) => {
     return;
   }
   await ctx.answerCbQuery();
-  ownerSession = { state: "awaitingFirewallRuleCreate" };
+  setOwnerSession({ state: "awaitingFirewallRuleCreate" });
   await respondWithOwnerView(ctx, ownerMessages.firewallPromptCreate, buildOwnerNavigationKeyboard());
 });
 
@@ -1509,7 +1501,7 @@ bot.action(FIREWALL_TOGGLE_REGEX, async (ctx) => {
   const summary = mapRuleDetailToSummary(detail);
   const payload = buildPayloadFromStoredRule(summary, { enabled: !summary.enabled }, actorId(ctx));
   await upsertFirewallRule(payload);
-  invalidateFirewallCache(payload.groupChatId ?? summary.chatId ?? null);
+  await invalidateFirewallCache(payload.groupChatId ?? summary.chatId ?? null);
 
   await showOwnerFirewallDetail(
     ctx,
@@ -1539,7 +1531,7 @@ bot.action(FIREWALL_DELETE_REGEX, async (ctx) => {
   }
 
   await deleteFirewallRule(ruleId);
-  invalidateFirewallCache(detail.chatId ?? null);
+  await invalidateFirewallCache(detail.chatId ?? null);
   resetOwnerSession();
   await showOwnerFirewallMenu(ctx, ownerMessages.firewallDeleted);
 });
@@ -1565,7 +1557,7 @@ bot.action(FIREWALL_EDIT_REGEX, async (ctx) => {
   }
 
   const summary = mapRuleDetailToSummary(detail);
-  ownerSession = { state: "awaitingFirewallRuleEdit", pending: { ruleId, chatId: summary.chatId } };
+  setOwnerSession({ state: "awaitingFirewallRuleEdit", pending: { ruleId, chatId: summary.chatId } });
 
   const editablePayload = {
     id: summary.id,
@@ -1607,7 +1599,7 @@ bot.action(actionId("ownerSettingsFreeDays"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSettingsFreeDays" };
+  setOwnerSession({ state: "awaitingSettingsFreeDays" });
   await respondWithOwnerView(ctx, ownerMessages.settingsFreeDays, buildOwnerNavigationKeyboard());
 });
 
@@ -1616,7 +1608,7 @@ bot.action(actionId("ownerSettingsStars"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSettingsStars" };
+  setOwnerSession({ state: "awaitingSettingsStars" });
   await respondWithOwnerView(ctx, ownerMessages.settingsStars, buildOwnerNavigationKeyboard());
 });
 
@@ -1625,7 +1617,7 @@ bot.action(actionId("ownerSettingsWelcomeMessages"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSettingsWelcomeMessages" };
+  setOwnerSession({ state: "awaitingSettingsWelcomeMessages" });
   await respondWithOwnerView(
     ctx,
     `${ownerMessages.settingsWelcomeMessages}\n\nSend messages separated by blank lines. A maximum of four will be stored.`,
@@ -1638,7 +1630,7 @@ bot.action(actionId("ownerSettingsGpidHelp"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSettingsGpidHelp" };
+  setOwnerSession({ state: "awaitingSettingsGpidHelp" });
   await respondWithOwnerView(ctx, ownerMessages.settingsGpidHelp, buildOwnerNavigationKeyboard());
 });
 
@@ -1647,7 +1639,7 @@ bot.action(actionId("ownerSettingsLabels"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSettingsLabels" };
+  setOwnerSession({ state: "awaitingSettingsLabels" });
   await respondWithOwnerView(
     ctx,
     `${ownerMessages.settingsLabels}\n\nExample: {"start_add_to_group":"Invite firewall bot","owner_nav_back":"Previous"}`,
@@ -1660,7 +1652,7 @@ bot.action(actionId("ownerSettingsChannelText"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSettingsChannelText" };
+  setOwnerSession({ state: "awaitingSettingsChannelText" });
   await respondWithOwnerView(ctx, ownerMessages.settingsChannelText, buildOwnerNavigationKeyboard());
 });
 
@@ -1669,7 +1661,7 @@ bot.action(actionId("ownerSettingsInfoCommands"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSettingsInfoCommands" };
+  setOwnerSession({ state: "awaitingSettingsInfoCommands" });
   await respondWithOwnerView(ctx, ownerMessages.settingsInfoCommands, buildOwnerNavigationKeyboard());
 });
 
@@ -1678,7 +1670,7 @@ bot.action(actionId("ownerDailyTask"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingDailyTaskLink" };
+  setOwnerSession({ state: "awaitingDailyTaskLink" });
   const summary = formatDailyTaskSummary(dailyTaskConfig);
   const message = `${ownerMessages.dailyTaskIntro}
 
@@ -1712,7 +1704,7 @@ bot.action(actionId("ownerSliderAdd"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSliderPhoto" };
+  setOwnerSession({ state: "awaitingSliderPhoto" });
   await respondWithOwnerView(ctx, ownerMessages.sliderAddPromptPhoto, buildSliderNavigationKeyboard());
 });
 
@@ -1721,7 +1713,7 @@ bot.action(actionId("ownerSliderRemove"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingSliderRemoval" };
+  setOwnerSession({ state: "awaitingSliderRemoval" });
   await respondWithOwnerView(ctx, ownerMessages.sliderRemovePrompt, buildSliderNavigationKeyboard());
 });
 
@@ -1739,7 +1731,7 @@ bot.action(actionId("ownerBanAdd"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingBanUserId" };
+  setOwnerSession({ state: "awaitingBanUserId" });
   await respondWithOwnerView(ctx, ownerMessages.banAddPrompt, buildBanNavigationKeyboard());
 });
 
@@ -1748,7 +1740,7 @@ bot.action(actionId("ownerBanRemove"), async (ctx) => {
     return;
   }
 
-  ownerSession = { state: "awaitingUnbanUserId" };
+  setOwnerSession({ state: "awaitingUnbanUserId" });
   await respondWithOwnerView(ctx, ownerMessages.banRemovePrompt, buildBanNavigationKeyboard());
 });
 
@@ -1885,14 +1877,14 @@ bot.on("photo", async (ctx) => {
     return;
   }
 
-  ownerSession = {
+  setOwnerSession({
     state: "awaitingSliderLink",
     pending: {
       fileId: bestMatch.file_id,
       width: bestMatch.width,
       height: bestMatch.height
     }
-  };
+  });
 
   await ctx.reply(ownerMessages.sliderAwaitLink, buildSliderNavigationKeyboard());
 });
@@ -2019,10 +2011,10 @@ bot.on("text", async (ctx) => {
         return;
       }
 
-      ownerSession = {
+      setOwnerSession({
         state: "awaitingBroadcastConfirm",
         pending: { message: text }
-      };
+      });
       await ctx.reply(
         "Send YES to confirm the broadcast or CANCEL to abort.",
         buildOwnerNavigationKeyboard()
@@ -2161,32 +2153,32 @@ bot.on("text", async (ctx) => {
         return;
       }
 
-      ownerSession = { state: "awaitingDailyTaskButton", pending: { channelLink: normalizedLink } };
+      setOwnerSession({ state: "awaitingDailyTaskButton", pending: { channelLink: normalizedLink } });
       await ctx.reply(ownerMessages.dailyTaskPromptButton, buildOwnerNavigationKeyboard());
       return;
     }
     case "awaitingDailyTaskButton": {
       const pending = ownerSession.pending;
-      ownerSession = {
+      setOwnerSession({
         state: "awaitingDailyTaskDescription",
         pending: {
           channelLink: pending.channelLink,
           buttonLabel: text
         }
-      };
+      });
       await ctx.reply(ownerMessages.dailyTaskPromptDescription, buildOwnerNavigationKeyboard());
       return;
     }
     case "awaitingDailyTaskDescription": {
       const pending = ownerSession.pending;
-      ownerSession = {
+      setOwnerSession({
         state: "awaitingDailyTaskXp",
         pending: {
           channelLink: pending.channelLink,
           buttonLabel: pending.buttonLabel,
           description: text
         }
-      };
+      });
       await ctx.reply(ownerMessages.dailyTaskPromptXp, buildOwnerNavigationKeyboard());
       return;
     }
@@ -2349,8 +2341,41 @@ export async function startBotWebhookServer(options: WebhookOptions): Promise<We
 
   const app = express();
   app.set("trust proxy", true);
-  app.use(express.json({ limit: "1mb" }));
-  app.use(express.urlencoded({ extended: true }));
+  app.use((req, res, next) => {
+    const reqWithId = req as RequestWithId;
+    const requestId = uuidv4();
+    reqWithId.id = requestId;
+    res.setHeader("X-Request-ID", requestId);
+    next();
+  });
+
+  app.use((req, res, next) => {
+    if (process.env.NODE_ENV === "production" && !req.secure) {
+      const host = req.headers.host;
+      if (host) {
+        return res.redirect(301, `https://${host}${req.originalUrl}`);
+      }
+    }
+    next();
+  });
+
+  const bodyLimit = "1mb";
+  app.use(express.json({ limit: bodyLimit }));
+  app.use(express.urlencoded({ extended: true, limit: bodyLimit }));
+
+  const configuredWindowMs = Number.parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? "", 10);
+  const configuredMax = Number.parseInt(process.env.RATE_LIMIT_MAX ?? "", 10);
+  const apiLimiter = rateLimit({
+    windowMs: Number.isFinite(configuredWindowMs) && configuredWindowMs > 0 ? configuredWindowMs : 15 * 60 * 1000,
+    max: Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({ error: "Too many requests, please try again later." });
+    },
+  });
+
+  app.use("/api", apiLimiter);
 
   registerApiRoutes(app);
 
@@ -2385,7 +2410,3 @@ export async function startBotWebhookServer(options: WebhookOptions): Promise<We
 }
 
 export { bot };
-
-
-
-

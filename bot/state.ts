@@ -1,12 +1,22 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { open, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const dataDir = resolve(moduleDir, "../data");
 const statePath = resolve(dataDir, "bot-state.json");
+const stateLockPath = resolve(dataDir, "bot-state.lock");
 const databaseAvailable = Boolean(process.env.DATABASE_URL);
 const ownerTelegramId = process.env.BOT_OWNER_ID?.trim() ?? null;
+const LOCK_RETRY_DELAY_MS = 40;
+const LOCK_STALE_THRESHOLD_MS = 30_000;
+
+type Awaitable<T> = T | Promise<T>;
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
 
 export type PanelSettings = {
   freeTrialDays: number;
@@ -66,6 +76,40 @@ export type StarsState = {
   groups: Record<string, GroupStarsRecord>;
 };
 
+export type OwnerSessionState =
+  | { state: "idle" }
+  | { state: "awaitingAddAdmin" }
+  | { state: "awaitingRemoveAdmin" }
+  | { state: "awaitingManageGroup" }
+  | { state: "awaitingIncreaseCredit" }
+  | { state: "awaitingDecreaseCredit" }
+  | { state: "awaitingBroadcastMessage" }
+  | { state: "awaitingBroadcastConfirm"; pending: { message: string } }
+  | { state: "awaitingSliderPhoto" }
+  | { state: "awaitingSliderLink"; pending: { fileId: string; width: number; height: number } }
+  | { state: "awaitingSliderRemoval" }
+  | { state: "awaitingBanUserId" }
+  | { state: "awaitingUnbanUserId" }
+  | { state: "awaitingDailyTaskLink" }
+  | { state: "awaitingDailyTaskButton"; pending: { channelLink: string } }
+  | {
+      state: "awaitingDailyTaskDescription";
+      pending: { channelLink: string; buttonLabel: string };
+    }
+  | {
+      state: "awaitingDailyTaskXp";
+      pending: { channelLink: string; buttonLabel: string; description: string };
+    }
+  | { state: "awaitingSettingsFreeDays" }
+  | { state: "awaitingSettingsStars" }
+  | { state: "awaitingSettingsWelcomeMessages" }
+  | { state: "awaitingSettingsGpidHelp" }
+  | { state: "awaitingSettingsLabels" }
+  | { state: "awaitingSettingsChannelText" }
+  | { state: "awaitingSettingsInfoCommands" }
+  | { state: "awaitingFirewallRuleCreate" }
+  | { state: "awaitingFirewallRuleEdit"; pending: { ruleId: string; chatId: string | null } };
+
 export type BotState = {
   panelAdmins: string[];
   bannedUserIds: string[];
@@ -74,7 +118,10 @@ export type BotState = {
   promoSlides: PromoSlideRecord[];
   broadcasts: BroadcastRecord[];
   stars: StarsState;
+  ownerSession: OwnerSessionState;
 };
+
+const defaultOwnerSession: OwnerSessionState = { state: "idle" };
 
 const defaultState: BotState = {
   panelAdmins: [],
@@ -100,7 +147,128 @@ const defaultState: BotState = {
     ],
     groups: {},
   },
+  ownerSession: defaultOwnerSession,
 };
+
+function normalizeOwnerSession(input: unknown): OwnerSessionState {
+  if (!input || typeof input !== "object") {
+    return { state: "idle" };
+  }
+  const raw = input as Record<string, unknown>;
+  const stateValue = typeof raw.state === "string" ? raw.state : null;
+  if (!stateValue) {
+    return { state: "idle" };
+  }
+
+  const simpleStates = new Set<OwnerSessionState["state"]>([
+    "idle",
+    "awaitingAddAdmin",
+    "awaitingRemoveAdmin",
+    "awaitingManageGroup",
+    "awaitingIncreaseCredit",
+    "awaitingDecreaseCredit",
+    "awaitingBroadcastMessage",
+    "awaitingSliderPhoto",
+    "awaitingSliderRemoval",
+    "awaitingBanUserId",
+    "awaitingUnbanUserId",
+    "awaitingDailyTaskLink",
+    "awaitingSettingsFreeDays",
+    "awaitingSettingsStars",
+    "awaitingSettingsWelcomeMessages",
+    "awaitingSettingsGpidHelp",
+    "awaitingSettingsLabels",
+    "awaitingSettingsChannelText",
+    "awaitingSettingsInfoCommands",
+    "awaitingFirewallRuleCreate",
+  ]);
+
+  if (simpleStates.has(stateValue as OwnerSessionState["state"])) {
+    return { state: stateValue as OwnerSessionState["state"] };
+  }
+
+  const pending = raw.pending;
+
+  switch (stateValue) {
+    case "awaitingBroadcastConfirm":
+      if (pending && typeof pending === "object" && typeof (pending as Record<string, unknown>).message === "string") {
+        return { state: "awaitingBroadcastConfirm", pending: { message: (pending as { message: string }).message } };
+      }
+      return { state: "idle" };
+    case "awaitingSliderLink":
+      if (
+        pending &&
+        typeof pending === "object" &&
+        typeof (pending as Record<string, unknown>).fileId === "string" &&
+        typeof (pending as Record<string, unknown>).width === "number" &&
+        typeof (pending as Record<string, unknown>).height === "number"
+      ) {
+        const typed = pending as { fileId: string; width: number; height: number };
+        return {
+          state: "awaitingSliderLink",
+          pending: { fileId: typed.fileId, width: typed.width, height: typed.height },
+        };
+      }
+      return { state: "idle" };
+    case "awaitingDailyTaskButton":
+      if (pending && typeof pending === "object" && typeof (pending as Record<string, unknown>).channelLink === "string") {
+        return {
+          state: "awaitingDailyTaskButton",
+          pending: { channelLink: (pending as { channelLink: string }).channelLink },
+        };
+      }
+      return { state: "idle" };
+    case "awaitingDailyTaskDescription":
+      if (
+        pending &&
+        typeof pending === "object" &&
+        typeof (pending as Record<string, unknown>).channelLink === "string" &&
+        typeof (pending as Record<string, unknown>).buttonLabel === "string"
+      ) {
+        const typed = pending as { channelLink: string; buttonLabel: string };
+        return {
+          state: "awaitingDailyTaskDescription",
+          pending: { channelLink: typed.channelLink, buttonLabel: typed.buttonLabel },
+        };
+      }
+      return { state: "idle" };
+    case "awaitingDailyTaskXp":
+      if (
+        pending &&
+        typeof pending === "object" &&
+        typeof (pending as Record<string, unknown>).channelLink === "string" &&
+        typeof (pending as Record<string, unknown>).buttonLabel === "string" &&
+        typeof (pending as Record<string, unknown>).description === "string"
+      ) {
+        const typed = pending as { channelLink: string; buttonLabel: string; description: string };
+        return {
+          state: "awaitingDailyTaskXp",
+          pending: {
+            channelLink: typed.channelLink,
+            buttonLabel: typed.buttonLabel,
+            description: typed.description,
+          },
+        };
+      }
+      return { state: "idle" };
+    case "awaitingFirewallRuleEdit":
+      if (
+        pending &&
+        typeof pending === "object" &&
+        typeof (pending as Record<string, unknown>).ruleId === "string" &&
+        ("chatId" in pending ? typeof (pending as Record<string, unknown>).chatId === "string" || (pending as Record<string, unknown>).chatId === null : true)
+      ) {
+        const typed = pending as { ruleId: string; chatId: string | null | undefined };
+        return {
+          state: "awaitingFirewallRuleEdit",
+          pending: { ruleId: typed.ruleId, chatId: typed.chatId ?? null },
+        };
+      }
+      return { state: "idle" };
+    default:
+      return { state: "idle" };
+  }
+}
 
 function ensureDataDir(): void {
   if (!existsSync(dataDir)) {
@@ -195,6 +363,7 @@ function readStateFromDisk(): BotState {
         plans,
         groups: starsGroups,
       },
+      ownerSession: normalizeOwnerSession(parsed.ownerSession),
     };
   } catch (error) {
     console.error("[state] Failed to parse bot-state.json, falling back to defaults:", error);
@@ -203,6 +372,46 @@ function readStateFromDisk(): BotState {
 }
 
 let state: BotState = readStateFromDisk();
+let writeQueue: Promise<void> = Promise.resolve();
+
+async function withFileLock<T>(task: () => Awaitable<T>): Promise<T> {
+  let handle: import("node:fs/promises").FileHandle | null = null;
+  const lockPayload = `${process.pid}:${Date.now()}`;
+
+  for (;;) {
+    try {
+      handle = await open(stateLockPath, "wx");
+      await handle.writeFile(lockPayload, "utf8");
+      break;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== "EEXIST") {
+        throw err;
+      }
+      try {
+        const stats = await stat(stateLockPath);
+        if (Date.now() - stats.mtimeMs > LOCK_STALE_THRESHOLD_MS) {
+          await unlink(stateLockPath).catch(() => undefined);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      await delay(LOCK_RETRY_DELAY_MS);
+    }
+  }
+
+  try {
+    return await task();
+  } finally {
+    try {
+      await handle?.close();
+    } catch {
+      // ignore close errors
+    }
+    await unlink(stateLockPath).catch(() => undefined);
+  }
+}
 
 function logDbWarning(context: string, error: unknown): void {
   if (!databaseAvailable) {
@@ -375,7 +584,18 @@ if (databaseAvailable) {
 function persistState(next: BotState): void {
   ensureDataDir();
   state = next;
-  writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  const payload = JSON.stringify(next, null, 2);
+  writeQueue = writeQueue
+    .then(() =>
+      withFileLock(async () => {
+        const tempPath = `${statePath}.${process.pid}.${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
+        await writeFile(tempPath, payload, "utf8");
+        await rename(tempPath, statePath);
+      }),
+    )
+    .catch((error) => {
+      console.error("[state] failed to persist bot state:", error);
+    });
 }
 
 function withState(mutator: (draft: BotState) => BotState): BotState {
@@ -613,6 +833,23 @@ export function getPromoSlides(): PromoSlideRecord[] {
   return [...state.promoSlides];
 }
 
+export function readOwnerSessionState(): OwnerSessionState {
+  return structuredClone(state.ownerSession);
+}
+
+export function writeOwnerSessionState(next: OwnerSessionState): OwnerSessionState {
+  const normalized = normalizeOwnerSession(next);
+  withState((draft) => {
+    draft.ownerSession = structuredClone(normalized);
+    return draft;
+  });
+  return structuredClone(state.ownerSession);
+}
+
+export function resetOwnerSessionState(): OwnerSessionState {
+  return writeOwnerSessionState({ state: "idle" });
+}
+
 export function addPromoSlide(entry: PromoSlideRecord): PromoSlideRecord[] {
   state = withState((draft) => {
     draft.promoSlides = [...draft.promoSlides.filter((slide) => slide.id !== entry.id), entry].sort((a, b) =>
@@ -792,4 +1029,3 @@ export function adjustStarsBalance(delta: number): StarsState {
   });
   return state.stars;
 }
-
