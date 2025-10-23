@@ -16,10 +16,12 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  groups           Group[]           @relation("GroupOwners")
-  memberships      GroupAdmin[]
-  wallet           StarsWallet?
-  starTransactions StarTransaction[]
+  groups                 Group[]               @relation("GroupOwners")
+  memberships            GroupAdmin[]
+  wallet                 StarsWallet?
+  starTransactions       StarTransaction[]
+  giveaways              Giveaway[]            @relation("GiveawayOwner")
+  giveawayParticipations GiveawayParticipant[] @relation("GiveawayParticipantUser")
 
   @@index([role])
 }
@@ -33,18 +35,25 @@ model Group {
   status         String
   creditBalance  Decimal  @default(0)
   ownerId        String?
+  generalSettings Json?
+  banSettings    Json?
+  limitSettings  Json?
+  silenceSettings Json?
+  mandatorySettings Json?
+  customTextSettings Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  owner            User?             @relation("GroupOwners", fields: [ownerId], references: [id], onDelete: SetNull)
-  managers         GroupAdmin[]
-  firewallRules    FirewallRule[]
-  ruleAudits       RuleAudit[]
-  wallet           StarsWallet?
-  starTransactions StarTransaction[]
-  reports          Report[]
+  owner             User?              @relation("GroupOwners", fields: [ownerId], references: [id], onDelete: SetNull)
+  managers          GroupAdmin[]
+  firewallRules     FirewallRule[]
+  ruleAudits        RuleAudit[]
+  wallet            StarsWallet?
+  starTransactions  StarTransaction[]
+  reports           Report[]
   moderationActions ModerationAction[]
   membershipEvents  MembershipEvent[]
+  giveaways         Giveaway[]         @relation("GiveawayGroup")
 
   @@index([ownerId])
 }
@@ -63,15 +72,15 @@ model GroupAdmin {
 }
 
 model FirewallRule {
-  id        String   @id @default(uuid())
-  groupId   String?
-  scope     String // group/global
-  type      String // Legacy matcher type (text/media/link etc.)
-  pattern   String? // Legacy pattern
-  action    String? // Legacy primary action (delete/mute/kick)
-  severity  Int      @default(1)
-  schedule  Json?
-  metadata  Json?
+  id                 String   @id @default(uuid())
+  groupId            String?
+  scope              String // group/global
+  type               String // Legacy matcher type (text/media/link etc.)
+  pattern            String? // Legacy pattern
+  action             String? // Legacy primary action (delete/mute/kick)
+  severity           Int      @default(1)
+  schedule           Json?
+  metadata           Json?
   name               String   @default("")
   description        String?
   enabled            Boolean  @default(true)
@@ -81,8 +90,8 @@ model FirewallRule {
   actions            Json?
   escalation         Json?
   createdBy          String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   group      Group?      @relation(fields: [groupId], references: [id], onDelete: Cascade)
   ruleAudits RuleAudit[]
@@ -149,58 +158,58 @@ model StarsWallet {
 }
 
 model StarTransaction {
-  id        String   @id @default(uuid())
-  walletId  String
-  groupId   String?
-  userId    String?
-  type      String // purchase/gift/refund
-  amount    Int
-  reference String?  @unique
-  metadata  Json?
-  createdAt DateTime @default(now())
-  status    String   @default("pending")
-  externalId String? @unique
+  id          String    @id @default(uuid())
+  walletId    String
+  groupId     String?
+  userId      String?
+  type        String // purchase/gift/refund
+  amount      Int
+  reference   String?   @unique
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  status      String    @default("pending")
+  externalId  String?   @unique
   completedAt DateTime?
 
-  wallet StarsWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  group  Group?      @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  user   User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
-  fundedGiveaways Giveaway[] @relation("GiveawayFundingTransaction")
+  wallet          StarsWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  group           Group?      @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  user            User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  fundedGiveaways Giveaway[]  @relation("GiveawayFundingTransaction")
 
   @@index([walletId, createdAt])
   @@index([status, createdAt])
 }
 
 model Giveaway {
-  id                String   @id @default(uuid())
-  ownerId           String?
-  groupId           String?
+  id                   String    @id @default(uuid())
+  ownerId              String?
+  groupId              String?
   fundingTransactionId String?
-  title             String
-  status            String   @default("scheduled")
-  seed              String   @default(uuid())
-  planId            String?
-  prizeDays         Int
-  winnersCount      Int
-  pricePerWinner    Int
-  totalCost         Int
-  startsAt          DateTime
-  endsAt            DateTime
-  validation        Json?
-  refundPolicy      Json?
-  requirements      Json?
-  analytics         Json?
-  minParticipants   Int       @default(0)
-  cancellationReason String?
-  cancelledAt       DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  title                String
+  status               String    @default("scheduled")
+  seed                 String    @default(uuid())
+  planId               String?
+  prizeDays            Int
+  winnersCount         Int
+  pricePerWinner       Int
+  totalCost            Int
+  startsAt             DateTime
+  endsAt               DateTime
+  validation           Json?
+  refundPolicy         Json?
+  requirements         Json?
+  analytics            Json?
+  minParticipants      Int       @default(0)
+  cancellationReason   String?
+  cancelledAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  owner User? @relation(fields: [ownerId], references: [id], onDelete: SetNull)
-  group Group? @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  fundingTransaction StarTransaction? @relation("GiveawayFundingTransaction", fields: [fundingTransactionId], references: [id], onDelete: SetNull)
-  participants GiveawayParticipant[]
-  winners GiveawayWinner[]
+  owner              User?                 @relation("GiveawayOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  group              Group?                @relation("GiveawayGroup", fields: [groupId], references: [id], onDelete: SetNull)
+  fundingTransaction StarTransaction?      @relation("GiveawayFundingTransaction", fields: [fundingTransactionId], references: [id], onDelete: SetNull)
+  participants       GiveawayParticipant[]
+  winners            GiveawayWinner[]
 
   @@index([ownerId])
   @@index([groupId])
@@ -221,9 +230,9 @@ model GiveawayParticipant {
   sourceIp       String?
   metadata       Json?
 
-  giveaway   Giveaway @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
-  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  winner     GiveawayWinner? @relation("GiveawayWinnerParticipant")
+  giveaway Giveaway        @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+  user     User?           @relation("GiveawayParticipantUser", fields: [userId], references: [id], onDelete: SetNull)
+  winner   GiveawayWinner? @relation("GiveawayWinnerParticipant")
 
   @@unique([giveawayId, telegramId])
   @@index([giveawayId, status])
@@ -231,18 +240,19 @@ model GiveawayParticipant {
 }
 
 model GiveawayWinner {
-  id             String   @id @default(uuid())
-  giveawayId     String
-  participantId  String?
-  telegramId     String
-  code           String   @unique
-  selectedAt     DateTime @default(now())
-  claimedAt      DateTime?
-  metadata       Json?
+  id            String    @id @default(uuid())
+  giveawayId    String
+  participantId String?
+  telegramId    String
+  code          String    @unique
+  selectedAt    DateTime  @default(now())
+  claimedAt     DateTime?
+  metadata      Json?
 
-  giveaway    Giveaway           @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+  giveaway    Giveaway             @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
   participant GiveawayParticipant? @relation("GiveawayWinnerParticipant", fields: [participantId], references: [id], onDelete: SetNull)
 
+  @@unique([participantId])
   @@index([giveawayId])
 }
 
@@ -254,39 +264,39 @@ model BotSetting {
 }
 
 model PromoSlide {
-  id        String   @id @default(uuid())
-  title     String?
-  subtitle  String?
-  description String?
-  imageUrl  String
-  thumbnailUrl String?
+  id                  String    @id @default(uuid())
+  title               String?
+  subtitle            String?
+  description         String?
+  imageUrl            String
+  thumbnailUrl        String?
   thumbnailStorageKey String?
-  storageKey String?
-  originalFileId String?
-  contentType String?
-  fileSize   Int?
-  width      Int?
-  height     Int?
-  checksum   String?
-  linkUrl   String?
-  position  Int      @default(0)
-  accentColor String? @default("#0f172a")
-  ctaLabel   String?
-  ctaLink    String?
-  active     Boolean  @default(true)
-  startsAt   DateTime?
-  endsAt     DateTime?
-  abTestGroupId String?
-  variant    String?
-  views      Int      @default(0)
-  clicks     Int      @default(0)
-  totalViewDurationMs BigInt @default(0)
-  bounces    Int      @default(0)
-  analytics  Json?
-  metadata  Json?
-  createdBy  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  storageKey          String?
+  originalFileId      String?
+  contentType         String?
+  fileSize            Int?
+  width               Int?
+  height              Int?
+  checksum            String?
+  linkUrl             String?
+  position            Int       @default(0)
+  accentColor         String?   @default("#0f172a")
+  ctaLabel            String?
+  ctaLink             String?
+  active              Boolean   @default(true)
+  startsAt            DateTime?
+  endsAt              DateTime?
+  abTestGroupId       String?
+  variant             String?
+  views               Int       @default(0)
+  clicks              Int       @default(0)
+  totalViewDurationMs BigInt    @default(0)
+  bounces             Int       @default(0)
+  analytics           Json?
+  metadata            Json?
+  createdBy           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   analyticsBuckets PromoSlideAnalytics[]
 
@@ -295,17 +305,17 @@ model PromoSlide {
 }
 
 model PromoSlideAnalytics {
-  id        String   @id @default(uuid())
-  slideId   String
-  bucket    DateTime
-  impressions Int    @default(0)
-  clicks    Int      @default(0)
-  totalViewDurationMs BigInt @default(0)
-  bounces   Int      @default(0)
-  segment   String?
-  metadata  Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  slideId             String
+  bucket              DateTime
+  impressions         Int      @default(0)
+  clicks              Int      @default(0)
+  totalViewDurationMs BigInt   @default(0)
+  bounces             Int      @default(0)
+  segment             String?
+  metadata            Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   slide PromoSlide @relation(fields: [slideId], references: [id], onDelete: Cascade)
 

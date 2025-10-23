@@ -14,6 +14,13 @@ const databaseAvailable = Boolean(process.env.DATABASE_URL);
 const ownerTelegramId = process.env.BOT_OWNER_ID?.trim() ?? null;
 const LOCK_RETRY_DELAY_MS = 40;
 const LOCK_STALE_THRESHOLD_MS = 30_000;
+
+export const DEFAULT_ONBOARDING_MESSAGES: readonly string[] = [
+  "👋 سلام! من <b>Firewall Bot</b> هستم و وظیفه‌ام محافظت از گروه، حذف اسپم و اجرای قوانین است.",
+  "🎁 یک دوره آزمایشی <b>{trial_days}</b> روزه برای این گروه فعال شد. پس از پایان دوره می‌توانید از پنل مدیران اعتبار اضافه کنید.",
+  "✅ لطفاً من را به عنوان <b>مدیر</b> ارتقا دهید و مجوزهای حذف پیام، اخراج کاربر و مدیریت پیام‌ها را فعال کنید تا بتوانم وظایفم را انجام دهم.",
+  "🚀 شروع سریع: از دستور <code>/panel</code> استفاده کنید، قفل‌های لینک، دامنه و فوروارد را روشن نگه دارید و گزارش‌ها را در پنل دنبال کنید.",
+];
 const EMPTY_PROMO_ANALYTICS = Object.freeze({
   impressions: 0,
   clicks: 0,
@@ -113,6 +120,7 @@ export type PanelSettings = {
   freeTrialDays: number;
   monthlyStars: number;
   welcomeMessages: string[];
+  onboardingMessages: string[];
   gpidHelpText: string;
   buttonLabels: Record<string, string>;
   channelAnnouncement: string;
@@ -185,6 +193,7 @@ export type OwnerSessionState =
   | { state: "awaitingSettingsFreeDays" }
   | { state: "awaitingSettingsStars" }
   | { state: "awaitingSettingsWelcomeMessages" }
+  | { state: "awaitingSettingsOnboardingMessages" }
   | { state: "awaitingSettingsGpidHelp" }
   | { state: "awaitingSettingsLabels" }
   | { state: "awaitingSettingsChannelText" }
@@ -210,9 +219,10 @@ const defaultState: BotState = {
   bannedUserIds: [],
   groups: {},
   settings: {
-    freeTrialDays: 7,
+    freeTrialDays: 15,
     monthlyStars: 10,
     welcomeMessages: [],
+    onboardingMessages: Array.from(DEFAULT_ONBOARDING_MESSAGES),
     gpidHelpText: "Share the group ID or forward a message so the bot can detect it automatically.",
     buttonLabels: {},
     channelAnnouncement: "Channel link not configured yet.",
@@ -258,6 +268,7 @@ function normalizeOwnerSession(input: unknown): OwnerSessionState {
     "awaitingSettingsFreeDays",
     "awaitingSettingsStars",
     "awaitingSettingsWelcomeMessages",
+    "awaitingSettingsOnboardingMessages",
     "awaitingSettingsGpidHelp",
     "awaitingSettingsLabels",
     "awaitingSettingsChannelText",

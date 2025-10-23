@@ -27,7 +27,18 @@ export interface BotContent {
 
 const fallbackContent: BotContent = {
   messages: {
-    welcome: "Hi there! Welcome to Firewall Bot!",
+    welcome: [
+      "Hello {user} 👋🏻",
+      "Welcome to Firewall — a smart and secure bot for managing Telegram groups.",
+      "",
+      "🛡️ Firewall helps you keep your community safe and organized with advanced moderation tools, security locks, and automated controls.",
+      "📱 Through its modern Mini App interface, you can easily manage settings, monitor activity, and control every feature visually.",
+      "",
+      "👈🏻 To get started, add the bot to your supergroup and set it as an admin to activate management.",
+      "",
+      "❓ Want to explore all features and commands?",
+      "Use the /help command or check the full guide here: Guide link",
+    ].join("\n"),
     managementPanel: "You can control your groups from here.",
     managementQuestion: "How would you like to configure the bot?",
     channel: "Channel introductions and features will be available soon from the owner panel.",
@@ -36,13 +47,13 @@ const fallbackContent: BotContent = {
     inlinePanel: "The in-group panel route will be enabled soon."
   },
   buttons: {
-    addToGroup: "Add to Group",
-    managementPanel: "Management Panel",
-    channel: "Channel",
-    commands: "Commands",
-    info: "About",
-    miniApp: "Open Mini App",
-    inlinePanel: "Inline Panel"
+    addToGroup: "➕ Add to Group",
+    managementPanel: "🎛 Management Panel",
+    channel: "📢 Channel",
+    commands: "📚 Commands",
+    info: "💬 Info",
+    miniApp: "📱 Open Mini App",
+    inlinePanel: "⌨️ Inline Panel"
   }
 };
 

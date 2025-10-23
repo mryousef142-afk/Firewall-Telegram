@@ -1,5 +1,4 @@
 import type {
-  AutoWarningPenalty,
   BanRuleKey,
   BanRuleSetting,
   DashboardSnapshot,
@@ -15,7 +14,6 @@ import type {
   TimeRangeSetting,
   CountLimitSettings,
   SilenceSettings,
-  SilenceWindowSetting,
   MandatoryMembershipSettings,
   CustomTextSettings,
   AnalyticsMessageType,
@@ -48,9 +46,6 @@ type PromoSlidesResponse = {
   slides: DashboardPromoSlot[];
   total?: number;
 };
-
-const clampHour = (value: number) => ((value % 24) + 24) % 24;
-const formatHour = (hour: number) => `${clampHour(hour).toString().padStart(2, "0")}:00`;
 
 const STARS_PLANS: StarsPlan[] = [
   { id: "stars-30", days: 30, price: 500 },
@@ -436,58 +431,62 @@ function createTimeRange(mode: TimeRangeMode, start = "00:00", end = "23:59"): T
 }
 
 function createGeneralSettings(id: string): GroupGeneralSettings {
-  const seed = hashString(id);
-  const timezone = DEFAULT_TIMEZONE;
-  const welcomeEnabled = (seed & 1) === 1;
-  const warningEnabled = ((seed >> 1) & 1) === 1;
-  const autoDeleteEnabled = ((seed >> 2) & 1) === 1;
-  const countAdmins = ((seed >> 3) & 1) === 1;
-  const autoWarningEnabled = ((seed >> 4) & 1) === 1;
-
-  const penalties: AutoWarningPenalty[] = ["delete", "mute", "kick"];
-
+  void id;
   return {
-    timezone,
-    welcomeEnabled,
-    welcomeSchedule: welcomeEnabled ? createTimeRange("custom", "08:00", "23:45") : createTimeRange("all"),
-    voteMuteEnabled: ((seed >> 5) & 1) === 1,
-    warningEnabled,
-    warningSchedule: warningEnabled ? createTimeRange("custom", "09:00", "22:00") : createTimeRange("all"),
-    silentModeEnabled: ((seed >> 6) & 1) === 1,
-    autoDeleteEnabled,
-    autoDeleteDelayMinutes: autoDeleteEnabled ? 30 + (seed % 6) * 5 : 15,
-    countAdminViolationsEnabled: countAdmins,
-    countAdminsOnly: countAdmins,
-    deleteAdminViolations: countAdmins && ((seed >> 7) & 1) === 1,
-    userVerificationEnabled: ((seed >> 8) & 1) === 1,
-    userVerificationSchedule: createTimeRange("custom", "07:00", "23:30"),
-    disablePublicCommands: ((seed >> 9) & 1) === 1,
-    disablePublicCommandsSchedule: createTimeRange("custom", "00:00", "23:00"),
-    removeJoinLeaveMessages: ((seed >> 10) & 1) === 1,
+    timezone: DEFAULT_TIMEZONE,
+    welcomeEnabled: true,
+    welcomeSchedule: createTimeRange("all"),
+    voteMuteEnabled: false,
+    warningEnabled: true,
+    warningSchedule: createTimeRange("all"),
+    silentModeEnabled: false,
+    autoDeleteEnabled: true,
+    autoDeleteDelayMinutes: 60,
+    countAdminViolationsEnabled: false,
+    countAdminsOnly: false,
+    deleteAdminViolations: false,
+    userVerificationEnabled: false,
+    userVerificationSchedule: createTimeRange("all"),
+    disablePublicCommands: false,
+    disablePublicCommandsSchedule: createTimeRange("all"),
+    removeJoinLeaveMessages: true,
     removeJoinLeaveSchedule: createTimeRange("all"),
-    autoWarningEnabled,
+    autoWarningEnabled: true,
     autoWarning: {
-      threshold: 3 + (seed % 3),
-      retentionDays: 7 + (seed % 4) * 7,
-      penalty: penalties[seed % penalties.length],
-      schedule: createTimeRange("custom", "07:00", "23:30"),
+      threshold: 3,
+      retentionDays: 14,
+      penalty: "mute",
+      schedule: createTimeRange("all"),
     },
-    defaultPenalty: penalties[(seed >> 2) % penalties.length],
+    defaultPenalty: "delete",
   };
 }
 
 function createBanSettings(id: string): GroupBanSettings {
-  const seed = hashString(id);
+  void id;
   const rules: Record<BanRuleKey, BanRuleSetting> = {} as Record<BanRuleKey, BanRuleSetting>;
 
-  BAN_RULE_KEYS.forEach((key, index) => {
-    const enabled = ((seed >> index) & 1) === 1;
-    const useCustom = ((seed >> (index + 4)) & 1) === 1;
-    const startHour = clampHour(6 + index);
-    const endHour = clampHour(startHour + 10);
+  const DEFAULT_ACTIVE_RULES = new Set<BanRuleKey>([
+    "banLinks",
+    "banDomains",
+    "banBots",
+    "banBotInviters",
+    "banForward",
+    "banForwardChannels",
+  ]);
+
+  BAN_RULE_KEYS.forEach((key) => {
+    if (DEFAULT_ACTIVE_RULES.has(key)) {
+      rules[key] = {
+        enabled: true,
+        schedule: createTimeRange("all"),
+      };
+      return;
+    }
+
     rules[key] = {
-      enabled,
-      schedule: useCustom ? createTimeRange("custom", formatHour(startHour), formatHour(endHour)) : createTimeRange("all"),
+      enabled: false,
+      schedule: createTimeRange("all"),
     };
   });
 
@@ -496,79 +495,55 @@ function createBanSettings(id: string): GroupBanSettings {
 
   return {
     rules,
-    blacklist: blacklist.slice(0, 3 + (seed % 2)),
-    whitelist: whitelist.slice(0, 2 + (seed % 2)),
+    blacklist,
+    whitelist,
   };
 }
 
 function createCountLimitSettings(id: string): CountLimitSettings {
-  const seed = hashString(id);
-  const minWordsPerMessage = seed % 3 === 0 ? 0 : 3 + (seed % 6);
-  const maxWordsPerMessage = 120 + (seed % 90);
-  const messagesPerWindow = seed % 2 === 0 ? 0 : 5 + (seed % 5);
-  const windowMinutes = messagesPerWindow === 0 ? 0 : 1 + (seed % 5);
-  const duplicateMessages = (seed >> 2) % 3 === 0 ? 0 : 2 + (seed % 4);
-  const duplicateWindowMinutes = duplicateMessages === 0 ? 0 : 60 * (1 + (seed % 3));
-
+  void id;
   return {
-    minWordsPerMessage,
-    maxWordsPerMessage,
-    messagesPerWindow,
-    windowMinutes,
-    duplicateMessages,
-    duplicateWindowMinutes,
+    minWordsPerMessage: 0,
+    maxWordsPerMessage: 250,
+    messagesPerWindow: 5,
+    windowMinutes: 1,
+    duplicateMessages: 3,
+    duplicateWindowMinutes: 10,
   };
 }
-
-const MANDATORY_CHANNELS_POOL = [
-  "@tgfirewall_news",
-  "@tgfirewall_support",
-  "@tgfirewall_updates",
-  "@tgfirewall_blog",
-  "@tgfirewall_team",
-];
 
 function createMandatoryMembershipSettings(id: string): MandatoryMembershipSettings {
-  const seed = hashString(id);
-  const forcedInviteCount = seed % 4 === 0 ? 0 : 1 + (seed % 3);
-  const forcedInviteResetDays = forcedInviteCount === 0 ? 0 : [7, 14, 30, 45][seed % 4];
-  const channelCount = forcedInviteCount === 0 ? 0 : 1 + (seed % 3);
-
+  void id;
   return {
-    forcedInviteCount,
-    forcedInviteResetDays,
-    mandatoryChannels: MANDATORY_CHANNELS_POOL.slice(0, channelCount),
-  };
-}
-
-function createSilenceWindowSetting(
-  enabled: boolean,
-  startHour: number,
-  durationHours: number,
-): SilenceWindowSetting {
-  const start = clampHour(startHour);
-  const normalizedDuration = Math.max(1, durationHours);
-  const end = clampHour(start + normalizedDuration);
-  return {
-    enabled,
-    start: formatHour(start),
-    end: formatHour(end === start ? clampHour(end + 1) : end),
+    forcedInviteCount: 0,
+    forcedInviteResetDays: 0,
+    mandatoryChannels: [],
   };
 }
 
 function createSilenceSettings(id: string): SilenceSettings {
-  const seed = hashString(id);
-
-  const emergencyLock = createSilenceWindowSetting(((seed >> 1) & 1) === 1, 18 + (seed % 4), 3 + (seed % 3));
-  const window1 = createSilenceWindowSetting(((seed >> 2) & 1) === 1, 22, 8);
-  const window2 = createSilenceWindowSetting(((seed >> 3) & 1) === 1, 9 + (seed % 2), 4 + ((seed >> 2) % 3));
-  const window3 = createSilenceWindowSetting(((seed >> 4) & 1) === 1, 14 + (seed % 3), 3 + ((seed >> 1) % 4));
-
+  void id;
   return {
-    emergencyLock,
-    window1,
-    window2,
-    window3,
+    emergencyLock: {
+      enabled: false,
+      start: "00:00",
+      end: "00:00",
+    },
+    window1: {
+      enabled: false,
+      start: "00:00",
+      end: "00:00",
+    },
+    window2: {
+      enabled: false,
+      start: "00:00",
+      end: "00:00",
+    },
+    window3: {
+      enabled: false,
+      start: "00:00",
+      end: "00:00",
+    },
   };
 }
 
@@ -698,16 +673,8 @@ const DEFAULT_CUSTOM_TEXTS: CustomTextSettings = {
 };
 
 function createCustomTextSettings(id: string): CustomTextSettings {
-  const seed = hashString(id);
-  const base: CustomTextSettings = { ...DEFAULT_CUSTOM_TEXTS };
-  if ((seed & 1) === 1) {
-    base.promoButtonEnabled = true;
-  }
-  if ((seed & 2) === 2) {
-    base.promoButtonText = "Check updates";
-    base.promoButtonUrl = "https://t.me/tgfirewall_news";
-  }
-  return base;
+  void id;
+  return { ...DEFAULT_CUSTOM_TEXTS };
 }
 
 export async function fetchDashboardSnapshot(): Promise<DashboardSnapshot> {
@@ -880,87 +847,145 @@ export async function fetchGroupDetails(id: string): Promise<GroupDetail> {
 }
 
 export async function fetchGroupGeneralSettings(id: string): Promise<GroupGeneralSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  return createGeneralSettings(id);
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    return createGeneralSettings(id);
+  }
+  return requestApi<GroupGeneralSettings>(`/groups/${encodeURIComponent(id)}/settings/general`, { method: "GET" });
 }
 
 export async function updateGroupGeneralSettings(
   id: string,
   settings: GroupGeneralSettings,
 ): Promise<GroupGeneralSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  console.info(`[settings] general settings saved for ${id}`, settings);
-  return settings;
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    console.info(`[settings] general settings saved for ${id}`, settings);
+    return settings;
+  }
+  return requestApi<GroupGeneralSettings>(`/groups/${encodeURIComponent(id)}/settings/general`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchGroupBanSettings(id: string): Promise<GroupBanSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  return createBanSettings(id);
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    return createBanSettings(id);
+  }
+  return requestApi<GroupBanSettings>(`/groups/${encodeURIComponent(id)}/settings/bans`, { method: "GET" });
 }
 
 export async function updateGroupBanSettings(
   id: string,
   settings: GroupBanSettings,
 ): Promise<GroupBanSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  console.info(`[settings] ban rules saved for ${id}`, settings);
-  return settings;
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    console.info(`[settings] ban rules saved for ${id}`, settings);
+    return settings;
+  }
+  return requestApi<GroupBanSettings>(`/groups/${encodeURIComponent(id)}/settings/bans`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchGroupCountLimitSettings(id: string): Promise<CountLimitSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  return createCountLimitSettings(id);
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    return createCountLimitSettings(id);
+  }
+  return requestApi<CountLimitSettings>(`/groups/${encodeURIComponent(id)}/settings/limits`, { method: "GET" });
 }
 
 export async function updateGroupCountLimitSettings(
   id: string,
   settings: CountLimitSettings,
 ): Promise<CountLimitSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  console.info(`[settings] count limits saved for ${id}`, settings);
-  return settings;
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    console.info(`[settings] count limits saved for ${id}`, settings);
+    return settings;
+  }
+  return requestApi<CountLimitSettings>(`/groups/${encodeURIComponent(id)}/settings/limits`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchGroupMandatoryMembershipSettings(id: string): Promise<MandatoryMembershipSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  return createMandatoryMembershipSettings(id);
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    return createMandatoryMembershipSettings(id);
+  }
+  return requestApi<MandatoryMembershipSettings>(`/groups/${encodeURIComponent(id)}/settings/mandatory`, {
+    method: "GET",
+  });
 }
 
 export async function updateGroupMandatoryMembershipSettings(
   id: string,
   settings: MandatoryMembershipSettings,
 ): Promise<MandatoryMembershipSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  console.info(`[settings] mandatory membership saved for ${id}`, settings);
-  return settings;
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    console.info(`[settings] mandatory membership saved for ${id}`, settings);
+    return settings;
+  }
+  return requestApi<MandatoryMembershipSettings>(`/groups/${encodeURIComponent(id)}/settings/mandatory`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchGroupCustomTextSettings(id: string): Promise<CustomTextSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  return createCustomTextSettings(id);
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    return createCustomTextSettings(id);
+  }
+  return requestApi<CustomTextSettings>(`/groups/${encodeURIComponent(id)}/settings/custom-texts`, {
+    method: "GET",
+  });
 }
 
 export async function updateGroupCustomTextSettings(
   id: string,
   settings: CustomTextSettings,
 ): Promise<CustomTextSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  console.info(`[settings] custom texts saved for ${id}`, settings);
-  return settings;
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    console.info(`[settings] custom texts saved for ${id}`, settings);
+    return settings;
+  }
+  return requestApi<CustomTextSettings>(`/groups/${encodeURIComponent(id)}/settings/custom-texts`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchGroupSilenceSettings(id: string): Promise<SilenceSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  return createSilenceSettings(id);
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    return createSilenceSettings(id);
+  }
+  return requestApi<SilenceSettings>(`/groups/${encodeURIComponent(id)}/settings/silence`, { method: "GET" });
 }
 
 export async function updateGroupSilenceSettings(
   id: string,
   settings: SilenceSettings,
 ): Promise<SilenceSettings> {
-  await delay(dashboardConfig.mockDelayMs);
-  console.info(`[settings] silence settings saved for ${id}`, settings);
-  return settings;
+  if (!apiBaseUrl) {
+    await delay(dashboardConfig.mockDelayMs);
+    console.info(`[settings] silence settings saved for ${id}`, settings);
+    return settings;
+  }
+  return requestApi<SilenceSettings>(`/groups/${encodeURIComponent(id)}/settings/silence`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchGroupAnalytics(id: string): Promise<GroupAnalyticsSnapshot> {

@@ -1,20 +1,20 @@
 ﻿{
   "messages": {
-    "welcome": "Hi there! Welcome to Firewall Bot!",
-    "managementPanel": "You can control your groups from here.",
-    "channel": "Channel introductions and features will be available soon from the owner panel.",
-    "commands": "The command list will be published here shortly.",
-    "info": "More information will appear once the management dashboard is ready.",
-    "inlinePanel": "The in-group panel route will be enabled soon.",
-    "managementQuestion": "How would you like to configure the bot?"
+    "welcome": "Hello {name} 👋🏻\nWelcome to Firewall — a smart and secure bot for managing Telegram groups.\n\n🛡️ Firewall helps you keep your community safe and organized with advanced moderation tools, security locks, and automated controls.\n📱 Through its modern Mini App interface, you can easily manage settings, monitor activity, and control every feature visually.\n\n👈🏻 To get started, add the bot to your supergroup and set it as an admin to activate management.\n",
+    "managementPanel": "⚙️ Management Panel\n\nFrom here, you can control all aspects of your groups — security settings, member management, automated rules, and more.\n\nChoose your preferred method to access the dashboard below.",
+    "channel": "📢 Official Channel\n\nStay updated with the latest features, updates, and announcements.\nJoin our channel to never miss important news about Firewall!\n\n[Channel will be configured by the bot owner]",
+    "commands": "📋 The command list will be published here shortly.",
+    "info": "🚀 Firewall was created and is continuously developed with care by @iamSeyyed.\n\n🙏 Special thanks to @maxim, @username, all server admins, the development team, supporters, and every user who reports bugs or suggests new features — your feedback keeps this project alive.\n\n💬 We deeply appreciate every group that uses Firewall.\nYour trust is our motivation — and we'll keep making Firewall stronger every day. 🔥",
+    "inlinePanel": "⚡ Inline Panel\nThe in-group panel route will be enabled soon.",
+    "managementQuestion": "How would you like to access the management panel?\n\nChoose between:\n📱 Mini App — Full visual dashboard\n⚡ Inline Panel — Quick settings in chat"
   },
   "buttons": {
-    "addToGroup": "Add to Group",
-    "managementPanel": "Management Panel",
-    "channel": "Channel",
-    "commands": "Commands",
-    "info": "About",
-    "miniApp": "Open Mini App",
-    "inlinePanel": "Inline Panel"
+    "addToGroup": "➕ Add to Group",
+    "managementPanel": "🎛 Management Panel",
+    "channel": "📢 Channel",
+    "commands": "📚 Commands",
+    "info": "💬 Info",
+    "miniApp": "📱 Open Mini App",
+    "inlinePanel": "⌨️ Inline Panel"
   }
 }
